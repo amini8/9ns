@@ -1,0 +1,20 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource prefix="/">
+    <file alias="icons/9ns-mark.svg">9ns-mark.svg</file>
+    <file alias="icons/query-log.svg">icons/query-log.svg</file>
+    <file alias="icons/dashboard.svg">icons/dashboard.svg</file>
+    <file alias="icons/servers.svg">icons/servers.svg</file>
+    <file alias="icons/rules.svg">icons/rules.svg</file>
+    <file alias="icons/settings.svg">icons/settings.svg</file>
+    <file alias="icons/system-log.svg">icons/system-log.svg</file>
+    <file alias="icons/start.svg">icons/start.svg</file>
+    <file alias="icons/stop.svg">icons/stop.svg</file>
+    <file alias="icons/flush.svg">icons/flush.svg</file>
+    <file alias="icons/clear.svg">icons/clear.svg</file>
+    <file alias="icons/globe.svg">icons/globe.svg</file>
+    <file alias="icons/wizard.svg">icons/wizard.svg</file>
+    <file alias="icons/add.svg">icons/add.svg</file>
+    <file alias="icons/folder.svg">icons/folder.svg</file>
+    <file alias="icons/save.svg">icons/save.svg</file>
+</qresource>
+</RCC>

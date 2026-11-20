@@ -1,0 +1,8 @@
+#include <windows.h>
+
+1 24 "setup.manifest"
+1 ICON "../resources/app.ico"
+
+// Zip payload resource (ID 100)
+100 RCDATA "payload.zip"
+101 RCDATA "../../LICENSE"

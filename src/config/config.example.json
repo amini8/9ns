@@ -1,0 +1,85 @@
+{
+  "listen_port": 53,
+  "cache_entries": 4096,
+  "min_ttl": 0,
+  "max_ttl": 86400,
+  "negative_ttl": 60,
+  "system_dns": false,
+  "ipv6_loopback": true,
+  "prevent_dns_leaks": true,
+  "dnssec_validation": true,
+  "autostart": false,
+  "close_to_tray": true,
+  "default_target": "fast-pool",
+  "upstreams": [
+    {
+      "name": "cloudflare-doh",
+      "type": "doh",
+      "address": "https://cloudflare-dns.com/dns-query",
+      "port": 443,
+      "bootstrap_ips": ["1.1.1.1", "1.0.0.1"],
+      "sni": "cloudflare-dns.com",
+      "tls_verify": true
+    },
+    {
+      "name": "cloudflare-dot",
+      "type": "dot",
+      "address": "1.1.1.1",
+      "port": 853,
+      "sni": "cloudflare-dns.com",
+      "tls_verify": true
+    },
+    {
+      "name": "google-dot",
+      "type": "dot",
+      "address": "8.8.8.8",
+      "port": 853,
+      "sni": "dns.google",
+      "tls_verify": true
+    },
+    {
+      "name": "google-plain",
+      "type": "plain",
+      "address": "8.8.8.8"
+    }
+  ],
+  "pools": [
+    {
+      "name": "fast-pool",
+      "strategy": "fastest",
+      "servers": ["cloudflare-dot", "google-dot"]
+    },
+    {
+      "name": "failover-pool",
+      "strategy": "failover",
+      "servers": ["cloudflare-doh", "google-plain"]
+    }
+  ],
+  "rules": [
+    {
+      "name": "AdBlockers",
+      "hostnames": ["ads.example.com", "*.doubleclick.net", "telemetry.*"],
+      "action": "block",
+      "block_mode": "null_ip"
+    },
+    {
+      "name": "CorporateVPN",
+      "hostnames": ["*.corp.lan", "internal.company.com"],
+      "action": "process",
+      "target": "google-plain"
+    },
+    {
+      "name": "BypassDirect",
+      "hostnames": ["local.router"],
+      "action": "bypass"
+    },
+    {
+      "name": "LocalServer",
+      "hostnames": ["mydev.lan"],
+      "action": "local",
+      "local_ip": "192.168.1.50"
+    }
+  ],
+  "log_file": "9ns.log",
+  "log_level": "info"
+}

@@ -1,0 +1,76 @@
+;
+; NineNsFlt.inf
+;
+
+[Version]
+	Signature	= "$WINDOWS NT$"
+	Class		= WFPCALLOUTS
+	ClassGuid	= {57465043-616C-6C6F-7574-5F636C617373}
+	Provider	= %ProviderString%
+	CatalogFile	= NineNsFlt.cat
+    DriverVer = 11/09/2026,1.0.0.0
+
+[SourceDisksNames]
+   1 = %NineNsFltDisk%,,""
+
+[SourceDisksFiles]
+   NineNsFlt.sys = 1,,
+
+[DestinationDirs]
+    DefaultDestDir      = 12                                            ; %WinDir%\System32\Drivers
+    NineNsFlt.DriverFiles = 12                                       ; %WinDir%\System32\Drivers
+
+[DefaultInstall.ntx86]
+    OptionDesc = %NineNsFltServiceDesc%
+    CopyFiles  = NineNsFlt.DriverFiles
+
+[DefaultInstall.ntamd64]
+    OptionDesc = %NineNsFltServiceDesc%
+    CopyFiles  = NineNsFlt.DriverFiles
+
+[DefaultInstall.ntarm64]
+    OptionDesc = %NineNsFltServiceDesc%
+    CopyFiles  = NineNsFlt.DriverFiles
+
+[DefaultInstall.ntx86.Services]
+    AddService = %NineNsFltServiceName%,0x00000800,NineNsFlt.Service ;0x00000800 - SPSVCSINST_STARTSERVICE
+[DefaultUninstall.ntx86]
+    LegacyUninstall=1
+[DefaultUninstall.ntx86.Services]
+    LegacyUninstall=1
+    DelService = %NineNsFltServiceName%,0x200                        ; SPSVCINST_STOPSERVICE
+
+[DefaultInstall.ntamd64.Services]
+    AddService = %NineNsFltServiceName%,0x00000800,NineNsFlt.Service ;0x00000800 - SPSVCSINST_STARTSERVICE
+[DefaultUninstall.ntamd64]
+    LegacyUninstall=1
+[DefaultUninstall.ntamd64.Services]
+    LegacyUninstall=1
+    DelService = %NineNsFltServiceName%,0x200                        ; SPSVCINST_STOPSERVICE
+
+[DefaultInstall.ntarm64.Services]
+    AddService = %NineNsFltServiceName%,0x00000800,NineNsFlt.Service ;0x00000800 - SPSVCSINST_STARTSERVICE
+[DefaultUninstall.ntarm64]
+    LegacyUninstall=1
+[DefaultUninstall.ntarm64.Services]
+    LegacyUninstall=1
+    DelService = %NineNsFltServiceName%,0x200                        ; SPSVCINST_STOPSERVICE
+
+[NineNsFlt.DriverFiles]
+    NineNsFlt.sys,,,0x00000004                                       ; COPYFLG_NOVERSIONCHECK
+
+[NineNsFlt.Service]
+    DisplayName   = %NineNsFltServiceName%
+    Description   = %NineNsFltServiceDesc%
+    ServiceType   = 1													; SERVICE_KERNEL_DRIVER
+    StartType     = 2													; 2=SERVICE_AUTO_START ; 3=SERVICE_DEMAND_START
+    ErrorControl  = 1													; SERVICE_ERROR_NORMAL
+    ServiceBinary = %12%\NineNsFlt.sys                               ; %WinDir%\System32\Drivers\NineNsFlt.sys
+	LoadOrderGroup = Extended Base
+	Dependencies	= BFE
+
+[Strings]
+    ProviderString     = "9NS"
+    NineNsFltDisk        = "NineNsFlt Installation Disk"
+    NineNsFltServiceDesc = "NineNsFlt Callout Driver"
+    NineNsFltServiceName = "NineNsFlt"

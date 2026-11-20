@@ -1,0 +1,121 @@
+# 9NS CI/CD: build the Qt6 app (MSYS2 MinGW64) + the NineNsFlt WDK
+# kernel driver, package a portable zip and a setup installer, upload them as
+# artifacts, and (on v* tags) publish a GitHub Release with both files.
+#
+# Supply chain: every `uses:` action below is referenced by mutable major tag.
+# Pin to SHA for release integrity once a verified full commit SHA for each
+# action is available from upstream; never guess a SHA.
+name: release
+
+on:
+  push:
+    branches: [master]   # build + artifacts only
+    tags: ['v*']          # build + artifacts + GitHub Release
+  workflow_dispatch:      # manual build + artifacts
+
+# Least privilege: read-only by default; only the release job opts into
+# contents: write (see per-job permissions below).
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4  # pin to SHA for release integrity
+        with:
+          persist-credentials: false
+
+      # The Windows runner ships VS Build Tools (C++) but not the WDK.
+      # The fwlink below downloads Microsoft's current WDK installer; the
+      # exact version served is not pinned. src\driver\build.cmd only needs
+      # the kit km\x64 libs, Inf2Cat and signtool.
+      # SECURITY: the download performs no publisher or hash verification.
+      # No known-good SHA-256 for wdksetup.exe is recorded in this repo;
+      # Authenticode publisher verification (Microsoft) and a pinned hash are
+      # required before treating this installer as trusted input. Left
+      # functional so CI keeps working until verification is added.
+      - name: Install Windows WDK
+        shell: pwsh
+        run: |
+          $wdk = Join-Path $env:RUNNER_TEMP 'wdksetup.exe'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2335869' -OutFile $wdk
+          Start-Process -FilePath $wdk -ArgumentList '/quiet','/norestart' -Wait
+
+      # MSYS2 MinGW64 toolchain for the Qt6 app and the packaging scripts.
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2  # pin to SHA for release integrity
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-svg
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-libsodium
+            mingw-w64-x86_64-nlohmann-json
+
+      # Configure and build the Qt6 app. OPENSSL_ROOT_DIR points at the MSYS2
+      # MinGW64 prefix (located via $MSYSTEM_PREFIX inside the MSYS2 shell) so
+      # a scoop/MSVC OpenSSL on PATH can never shadow the MinGW one; harmless
+      # when nothing shadows it.
+      - name: Build app
+        shell: msys2 {0}
+        run: |
+          cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR="$(cygpath -m "$MSYSTEM_PREFIX")" -DBUILD_TESTING=ON
+          cmake --build build-win
+
+      - name: Run offline regressions
+        shell: msys2 {0}
+        run: ctest --test-dir build-win --output-on-failure
+
+      # Kernel driver must be built with the MSVC/WDK toolchain (vcvars64,
+      # kit km libs, Inf2Cat, signtool) — NOT MSYS2. build.cmd locates VS via
+      # vswhere, builds, and test-signs with a self-signed cert (pwsh).
+      - name: Build kernel driver
+        shell: cmd
+        run: src\driver\build.cmd
+
+      # Packaging needs MSYS2 tools on PATH: package_windows.py uses objdump,
+      # create_setup.py invokes g++/windres from the MinGW64 toolchain.
+      # Requires the driver trio (src\driver\out\NineNsFlt.{sys,cat,inf}).
+      - name: Package portable zip and setup installer
+        shell: msys2 {0}
+        run: |
+          python scripts/package_windows.py
+          python scripts/create_setup.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4  # pin to SHA for release integrity
+        with:
+          name: 9ns-windows-x64
+          path: |
+            dist/9ns-windows-x64.zip
+            dist/9NS-Setup-1.0.0.exe
+
+  # Publish a GitHub Release only for v* tag pushes.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # scoped to this job: create the release only
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4  # pin to SHA for release integrity
+        with:
+          name: 9ns-windows-x64
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2  # pin to SHA for release integrity
+        with:
+          name: 9NS ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/9ns-windows-x64.zip
+            dist/9NS-Setup-1.0.0.exe

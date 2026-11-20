@@ -1,0 +1,19 @@
+build-win/
+build-win*
+src/driver/out/
+dist/
+packaging/
+packaging*
+AGENTS.md
+.mimocode*
+.mimocode/
+
+# scripts/*.py (package_windows.py, create_setup.py, live_test.py) are required
+# by CI and must be tracked; ignore only generated Python outputs.
+__pycache__/
+*.pyc
+
+# Keep the renamed installer source visible while ignoring generated packaging files.
+!packaging/
+packaging/*
+!packaging/9ns-setup.iss
