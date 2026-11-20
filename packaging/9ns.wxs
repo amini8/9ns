@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  9NS MSI installer (WiX 3.14). Mirrors the native setup.exe behavior:
+  files + shortcuts + Add/Remove Programs always; the 9NSService service and
+  the NineNsFlt driver are opt-in (INSTALLSERVICE=1 / INSTALLDRIVER=1), and
+  their failures are warnings, not install blockers. Build with
+  scripts/create_msi.py, which harvests dist/9ns-windows-x64 via heat.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="9NS" Language="1033" Version="1.0.0" Manufacturer="9NS Team"
+           UpgradeCode="9852A1A1-32B1-451F-84BC-4D8DCFF081AB">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
+             Description="9NS - Advanced System DNS Client" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of 9NS is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="INSTALLSERVICE" Value="0" Secure="yes" />
+    <Property Id="INSTALLDRIVER" Value="0" Secure="yes" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.exe" />
+    <Icon Id="AppIcon.exe" SourceFile="$(var.PackageDir)\9ns.exe" />
+
+    <Condition Message="Administrator rights are required to install 9NS.">Privileged</Condition>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="9NS" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="AppShortcuts" Guid="6676B87B-32D4-4192-8867-B373585EB0B3">
+        <Shortcut Id="StartMenuShortcut" Name="9NS"
+                  Description="9NS - Advanced System DNS Client"
+                  Target="[INSTALLDIR]9ns.exe" WorkingDirectory="INSTALLDIR" Icon="AppIcon.exe" />
+        <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="9NS"
+                  Description="9NS - Advanced System DNS Client"
+                  Target="[INSTALLDIR]9ns.exe" WorkingDirectory="INSTALLDIR" Icon="AppIcon.exe" />
+        <RemoveFolder Id="RemoveProgramMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\9NS" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Complete" Title="9NS" Level="1">
+      <ComponentGroupRef Id="PackageFiles" />
+      <ComponentRef Id="AppShortcuts" />
+    </Feature>
+
+    <UIRef Id="WixUI_InstallDir" />
+
+    <!-- Service registration matches service::installService: auto-start,
+         registered but never started by setup. sc.exe is used because the
+         app's install-service CLI flag shows a modal message box. -->
+    <CustomAction Id="InstallService" Directory="INSTALLDIR"
+                  ExeCommand="[SystemFolder]sc.exe create 9NSService binPath= &quot;\&quot;[INSTALLDIR]9ns.exe\&quot; --service&quot; start= auto DisplayName= &quot;9NS Proxy Service&quot;"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="InstallServiceDescription" Directory="INSTALLDIR"
+                  ExeCommand="[SystemFolder]sc.exe description 9NSService &quot;System-level secure DNS proxy with DoH, DoT, DNSCrypt, and rule routing.&quot;"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="UninstallServiceStop" Directory="INSTALLDIR"
+                  ExeCommand="[SystemFolder]sc.exe stop 9NSService"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="UninstallServiceDelete" Directory="INSTALLDIR"
+                  ExeCommand="[SystemFolder]sc.exe delete 9NSService"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <!-- The INF DefaultInstall/DefaultUninstall sections copy the driver to
+         System32\Drivers and add/remove the NineNsFlt service. Test-signed:
+         loading requires test-signing on the target machine. -->
+    <CustomAction Id="InstallDriver" Directory="INSTALLDIR"
+                  ExeCommand="[SystemFolder]rundll32.exe setupapi.dll,InstallHinfSection DefaultInstall 132 [INSTALLDIR]driver\NineNsFlt.inf"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="UninstallDriver" Directory="INSTALLDIR"
+                  ExeCommand="[SystemFolder]rundll32.exe setupapi.dll,InstallHinfSection DefaultUninstall 132 [INSTALLDIR]driver\NineNsFlt.inf"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="InstallService" After="InstallFiles">INSTALLSERVICE=1</Custom>
+      <Custom Action="InstallServiceDescription" After="InstallService">INSTALLSERVICE=1</Custom>
+      <Custom Action="InstallDriver" After="InstallFiles">INSTALLDRIVER=1</Custom>
+      <Custom Action="UninstallDriver" Before="RemoveFiles">Installed AND REMOVE="ALL"</Custom>
+      <Custom Action="UninstallServiceStop" After="UninstallDriver">Installed AND REMOVE="ALL"</Custom>
+      <Custom Action="UninstallServiceDelete" After="UninstallServiceStop">Installed AND REMOVE="ALL"</Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>
