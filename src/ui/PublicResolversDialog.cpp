@@ -30,6 +30,7 @@
 #include <QTextDocument>
 #include <QVBoxLayout>
 
+#include "ui/Donate.h"
 #include "ui/PublicResolverImport.h"
 #include "ui/ResolverJobs.h"
 
@@ -222,6 +223,11 @@ void PublicResolversDialog::buildUi() {
     createPoolBtn_->setEnabled(false);
     connect(createPoolBtn_, &QPushButton::clicked, this, &PublicResolversDialog::onCreatePoolFromSelected);
     bottomRow->addWidget(createPoolBtn_);
+
+    auto* donateBtn = new QPushButton(tr("Donate"), this);
+    donateBtn->setToolTip(tr("Support 9NS development with a Bitcoin donation"));
+    connect(donateBtn, &QPushButton::clicked, this, [this] { Donate::showDialog(this); });
+    bottomRow->addWidget(donateBtn);
 
     auto* closeBtn = new QPushButton(tr("Close"), this);
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);

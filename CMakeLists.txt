@@ -64,6 +64,7 @@ qt_add_executable(9ns WIN32
     src/transports/Upstream.cpp
     src/web/PublicResolversLoader.cpp
     src/ui/ConfigSession.cpp
+    src/ui/Donate.cpp
     src/ui/MainWindow.cpp
     src/ui/PoolDialog.cpp
     src/ui/PublicResolverImport.cpp

@@ -12,6 +12,7 @@
 [![Qt](https://img.shields.io/badge/Qt-6.5%2B-41CD52.svg?logo=qt)](#build)
 [![Protocols](https://img.shields.io/badge/Protocols-DoH%20%7C%20DoT%20%7C%20DoQ%20%7C%20ODoH%20%7C%20DNSCrypt-purple.svg)](#1-supported-protocols)
 [![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![Donate BTC](https://img.shields.io/badge/Donate-BTC-F7931A.svg?logo=bitcoin&logoColor=white)](#donate)
 
 </div>
 
@@ -225,6 +226,22 @@ Build with `python scripts/package_windows.py` followed by
 ZIP first after application changes: the setup generator reuses an existing ZIP.
 These wizard and command-line options apply to the native installer, not the
 separate optional Inno Setup script.
+
+---
+
+## Donate
+
+9NS is free, open-source software. If it has earned a place on your machine, a Bitcoin
+donation keeps it maintained.
+
+**BTC (Native SegWit / bech32):**
+
+```
+bc1qe0fg8qsc6n7ffke22qz38727e0nxnersq0en2u
+```
+
+The same address is reachable in the app under **About 9NS** and from the **Donate**
+button in the Public Resolvers browser.
 
 ---
 

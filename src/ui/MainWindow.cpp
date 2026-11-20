@@ -29,6 +29,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "ui/Donate.h"
 #include "ui/PoolDialog.h"
 #include "ui/PublicResolversDialog.h"
 #include "ui/QueryDetailsDialog.h"
@@ -1366,6 +1367,9 @@ void MainWindow::onAbout() {
                    "<li><b>Security:</b> Full DNSSEC AD validation & signature checks, DNS Leak Protection (multi-homed resolution suppression), System DNS dual-stack redirection.</li>"
                    "<li><b>Public Resolvers:</b> Live repository browser supporting 1,000+ public resolvers and relays.</li>"
                    "<li><b>Service:</b> Windows background service support.</li>"
-                   "</ul>"));
+                   "</ul>"
+                   "<p><b>Donate (BTC):</b> <a href=\"bitcoin:%1\">%1</a></p>")
+                    .arg(QString::fromLatin1(Donate::kBtcAddress)));
+    msg.setTextInteractionFlags(Qt::TextBrowserInteraction);
     msg.exec();
 }

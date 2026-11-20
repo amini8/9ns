@@ -123,6 +123,7 @@ add_executable(test_publicresolversdialog test_publicresolversdialog.cpp
     ${CMAKE_SOURCE_DIR}/src/core/Config.cpp
     ${CMAKE_SOURCE_DIR}/src/transports/Stamp.cpp
     ${CMAKE_SOURCE_DIR}/src/web/PublicResolversLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/Donate.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/PublicResolverImport.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/PublicResolversDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ResolverJobs.cpp
@@ -184,6 +185,7 @@ add_executable(test_richtext test_richtext.cpp
     ${CMAKE_SOURCE_DIR}/src/core/Config.cpp
     ${CMAKE_SOURCE_DIR}/src/transports/Stamp.cpp
     ${CMAKE_SOURCE_DIR}/src/web/PublicResolversLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/Donate.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/PublicResolverImport.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/PublicResolversDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ResolverJobs.cpp
