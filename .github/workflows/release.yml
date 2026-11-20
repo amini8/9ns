@@ -1,6 +1,6 @@
 # 9NS CI/CD: build the Qt6 app (MSYS2 MinGW64) + the NineNsFlt WDK
-# kernel driver, package a portable zip and a setup installer, upload them as
-# artifacts, and (on v* tags) publish a GitHub Release with both files.
+# kernel driver, package a portable zip, a setup installer and an MSI, upload
+# them as artifacts, and (on v* tags) publish a GitHub Release with all three.
 #
 # Supply chain: every `uses:` action below is referenced by mutable major tag.
 # Pin to SHA for release integrity once a verified full commit SHA for each
@@ -80,14 +80,29 @@ jobs:
         shell: cmd
         run: src\driver\build.cmd
 
+      # WiX 3.14 (candle/light/heat) builds the MSI. Chocolatey ships with the
+      # windows-2022 runner; the toolset's bin dir is added to PATH for the
+      # MSYS2 packaging step below.
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          choco install wixtoolset -y --no-progress
+          $wixBin = Get-ChildItem "${env:ProgramFiles(x86)}" -Directory -Filter 'WiX Toolset*' |
+            ForEach-Object { Join-Path $_.FullName 'bin' } |
+            Where-Object { Test-Path (Join-Path $_ 'candle.exe') } | Select-Object -First 1
+          if (-not $wixBin) { throw 'WiX Toolset binaries not found after install' }
+          Add-Content -Path $env:GITHUB_PATH -Value $wixBin
+
       # Packaging needs MSYS2 tools on PATH: package_windows.py uses objdump,
-      # create_setup.py invokes g++/windres from the MinGW64 toolchain.
+      # create_setup.py invokes g++/windres from the MinGW64 toolchain,
+      # create_msi.py invokes heat/candle/light from the WiX Toolset.
       # Requires the driver trio (src\driver\out\NineNsFlt.{sys,cat,inf}).
-      - name: Package portable zip and setup installer
+      - name: Package portable zip, setup installer and MSI
         shell: msys2 {0}
         run: |
           python scripts/package_windows.py
           python scripts/create_setup.py
+          python scripts/create_msi.py
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4  # pin to SHA for release integrity
@@ -96,6 +111,7 @@ jobs:
           path: |
             dist/9ns-windows-x64.zip
             dist/9NS-Setup-1.0.0.exe
+            dist/9NS-Setup-1.0.0.msi
 
   # Publish a GitHub Release only for v* tag pushes.
   release:
@@ -119,3 +135,4 @@ jobs:
           files: |
             dist/9ns-windows-x64.zip
             dist/9NS-Setup-1.0.0.exe
+            dist/9NS-Setup-1.0.0.msi
