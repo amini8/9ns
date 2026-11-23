@@ -1,0 +1,30 @@
+# Line-ending policy for 9NS.
+#
+# Text files are stored with LF and checked out with LF, independent of
+# core.autocrlf. Without this file a Windows checkout with core.autocrlf=true
+# reports every text file as modified even though its bytes are unchanged,
+# because the index (LF) and the working tree (CRLF) disagree on paper.
+#
+# Add new text file types here rather than relying on Git's guessing.
+* text=auto eol=lf
+
+# Windows batch files must keep CRLF: cmd.exe mis-parses LF-only files around
+# labels and goto. setup.rc and the INF are compiled by Windows tools that
+# historically expect CRLF, so they keep it too.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.rc text eol=crlf
+*.inf text eol=crlf
+
+# Binary assets: never diff, never convert, never merge.
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.msi binary
+*.sys binary
+*.svg text
