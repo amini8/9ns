@@ -35,4 +35,5 @@ private:
     QCheckBox* systemDnsCheck_ = nullptr;
     QCheckBox* leakPreventCheck_ = nullptr;
     QCheckBox* dnssecCheck_ = nullptr;
+    QCheckBox* forwardProxyCheck_ = nullptr;
 };

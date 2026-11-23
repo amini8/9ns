@@ -6,6 +6,7 @@
 
 #include "core/Config.h"
 #include "core/Logger.h"
+#include "core/ForwardProxy.h"
 #include "core/Proxy.h"
 #include "core/Resolver.h"
 #include "core/SystemDns.h"
@@ -34,6 +35,9 @@ public:
     uint16_t port() const { return port_; }
     bool systemDnsActive() const { return systemDns_.active(); }
     Resolver* resolver() { return resolver_.get(); }
+    bool forwardProxyRunning() const { return forwardProxy_ && forwardProxy_->running(); }
+    bool forwardProxyEnabled() const { return config_.forwardProxy.enabled; }
+    uint16_t forwardProxyPort() const { return config_.forwardProxy.port; }
 
 private:
     // Points adapter DNS at this engine. Returns false when it could not be done;
@@ -45,5 +49,6 @@ private:
     Config config_;
     std::unique_ptr<Resolver> resolver_;  // declared before proxy_, so it is destroyed after it
     std::unique_ptr<Proxy> proxy_;
+    std::unique_ptr<ForwardProxy> forwardProxy_;
     uint16_t port_ = 0;
 };

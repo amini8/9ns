@@ -14,7 +14,10 @@ public:
     virtual ~Upstream() = default;
 
     // Builds the upstream for a config entry. Throws std::runtime_error if the address is unusable.
-    static std::unique_ptr<Upstream> create(const UpstreamConfig& config);
+    // The optional upstream proxy is applied to every transport that can traverse it; DoQ and
+    // DNSCrypt-over-UDP cannot and validateConfig rejects that combination up front.
+    static std::unique_ptr<Upstream> create(const UpstreamConfig& config,
+                                            const UpstreamProxyConfig& proxy = {});
 
     // Sends the raw query and fills response with the raw reply. Returns false and sets error on
     // failure. Each call blocks for at most a few seconds.
@@ -51,8 +54,24 @@ protected:
     // transport and tls_verify; test fakes may set it directly.
     void setAuthenticated(bool authenticated) { authenticated_ = authenticated; }
 
+    // The upstream proxy every outbound connection of this transport is tunnelled through.
+    // Set by create() before the transport is first used. Disabled means a direct connection.
+    const UpstreamProxyConfig& upstreamProxy() const { return upstreamProxy_; }
+
 private:
+    // create() applies the proxy before handing the transport out, so no transport sees a
+    // half-configured upstream proxy.
+    void setUpstreamProxy(const UpstreamProxyConfig& proxy) {
+        upstreamProxy_ = proxy;
+        onUpstreamProxyChanged();
+    }
+
     std::string name_;
     std::string type_;
     bool authenticated_ = false;
+    UpstreamProxyConfig upstreamProxy_;
+
+protected:
+    // Transports that keep their proxy state in a helper object override this to copy it.
+    virtual void onUpstreamProxyChanged() {}
 };

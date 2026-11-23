@@ -51,6 +51,34 @@ SettingsPage::SettingsPage(QWidget* parent) : QWidget(parent) {
     listenerForm->addRow(tr("&Negative TTL (s):"), negativeTtlSpin_);
     root->addWidget(listenerBox);
 
+    auto* forwardBox = new QGroupBox(tr("Local Forward Proxy"), body);
+    auto* forwardForm = new QFormLayout(forwardBox);
+    forwardBox->setToolTip(tr("Loopback only (127.0.0.1 and ::1 when available). SOCKS5, SOCKS4a and HTTP CONNECT share one port. Save and restart the engine to apply changes."));
+    forwardProxyCheck_ = new QCheckBox(tr("Enable local forward proxy"), forwardBox);
+    forwardProxyCheck_->setObjectName(QStringLiteral("forwardProxyEnabled"));
+    forwardForm->addRow(forwardProxyCheck_);
+    forwardProxyPort_ = new QSpinBox(forwardBox);
+    forwardProxyPort_->setObjectName(QStringLiteral("forwardProxyPort"));
+    forwardProxyPort_->setRange(1, 65535);
+    forwardForm->addRow(tr("Proxy port:"), forwardProxyPort_);
+    forwardProxyUsername_ = new QLineEdit(forwardBox);
+    forwardProxyUsername_->setObjectName(QStringLiteral("forwardProxyUsername"));
+    forwardProxyUsername_->setToolTip(tr("Optional authentication: set both username and password. SOCKS4 is unavailable when authentication is enabled."));
+    forwardForm->addRow(tr("Username:"), forwardProxyUsername_);
+    forwardProxyPassword_ = new QLineEdit(forwardBox);
+    forwardProxyPassword_->setObjectName(QStringLiteral("forwardProxyPassword"));
+    forwardProxyPassword_->setEchoMode(QLineEdit::Password);
+    forwardProxyPassword_->setToolTip(tr("Credentials are stored in the protected configuration file, not encrypted. Authentication is for local applications only."));
+    forwardForm->addRow(tr("Password:"), forwardProxyPassword_);
+    auto updateForwardFields = [this](bool enabled) {
+        forwardProxyPort_->setEnabled(enabled);
+        forwardProxyUsername_->setEnabled(enabled);
+        forwardProxyPassword_->setEnabled(enabled);
+    };
+    connect(forwardProxyCheck_, &QCheckBox::toggled, this, updateForwardFields);
+    updateForwardFields(false);
+    root->addWidget(forwardBox);
+
     // Security
     auto* securityBox = new QGroupBox(tr("Security & Privacy"), body);
     auto* securityLayout = new QVBoxLayout(securityBox);
@@ -115,6 +143,10 @@ SettingsPage::SettingsPage(QWidget* parent) : QWidget(parent) {
 }
 
 void SettingsPage::setValues(const Config& config) {
+    forwardProxyCheck_->setChecked(config.forwardProxy.enabled);
+    forwardProxyPort_->setValue(config.forwardProxy.port);
+    forwardProxyUsername_->setText(QString::fromStdString(config.forwardProxy.username));
+    forwardProxyPassword_->setText(QString::fromStdString(config.forwardProxy.password));
     portSpin_->setValue(config.listenPort);
     cacheSpin_->setValue(static_cast<int>(config.cacheEntries));
     minTtlSpin_->setValue(static_cast<int>(config.minTtl));
@@ -131,6 +163,10 @@ void SettingsPage::setValues(const Config& config) {
 }
 
 void SettingsPage::applyTo(Config& config) const {
+    config.forwardProxy.enabled = forwardProxyCheck_->isChecked();
+    config.forwardProxy.port = static_cast<uint16_t>(forwardProxyPort_->value());
+    config.forwardProxy.username = forwardProxyUsername_->text().toStdString();
+    config.forwardProxy.password = forwardProxyPassword_->text().toStdString();
     config.listenPort = static_cast<uint16_t>(portSpin_->value());
     config.cacheEntries = static_cast<std::size_t>(cacheSpin_->value());
     config.minTtl = static_cast<uint32_t>(minTtlSpin_->value());

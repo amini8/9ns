@@ -16,6 +16,7 @@
 #include "core/DnsMessage.h"
 #include "core/Net.h"
 #include "core/Text.h"
+#include "transports/ProxyTunnel.h"
 
 namespace {
 
@@ -118,7 +119,11 @@ bool DotUpstream::exchange(const dns::Bytes& query, dns::Bytes& response, std::s
         return false;
     }
 
-    Socket sock = openConnected(serverAddr, addrLen, SOCK_STREAM, IPPROTO_TCP, error);
+    // A configured upstream proxy carries the TCP leg; the TLS session still verifies the
+    // DoT hostname because SNI is unchanged.
+    Socket sock = upstreamProxy().enabled
+        ? openProxyTunnel(upstreamProxy(), connectTarget, port_, error)
+        : openConnected(serverAddr, addrLen, SOCK_STREAM, IPPROTO_TCP, error);
     if (!sock.valid()) {
         return false;
     }

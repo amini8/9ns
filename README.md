@@ -41,7 +41,7 @@ or `Ctrl+1`–`Ctrl+6`:
    filter, numeric latency sorting and right-click block/bypass/inspect.
 3. **Servers & Pools** - upstreams, pools, the default target, and inline tests.
 4. **Rules** - first-match routing and blocking rules with keyboard reordering.
-5. **Settings** - listener/cache, security, background operation and logging.
+5. **Settings** - listener/cache, security, background operation, logging and the optional local forwarding proxy.
 6. **System Log** - diagnostics output.
 7. **kernel driver** - The optional kernel driver additionally requires test signing (or a trusted code-signing
   certificate) to load.
@@ -120,10 +120,46 @@ Group multiple upstream servers with intelligent routing strategies:
 
 
 
-### 9. Configuration Reference
+### 9. Local Forwarding Proxy (SOCKS5 / SOCKS4a / HTTP CONNECT)
 
-Configuration files are located in `%ProgramData%\9NS\config.json`. 
-A complete example is provided in [`src/config/config.example.json`](src/config/config.example.json)
+Enable **Local forwarding proxy** in Settings, save, and restart the engine. Point
+applications at `127.0.0.1:1080` (or the configured port). SOCKS5, SOCKS4/4a and HTTP
+CONNECT share one auto-detecting TCP port. The listener is always loopback-only;
+IPv6 `::1` is also used when available. It is disabled by default and works in
+both GUI and service mode. An occupied proxy port is logged without stopping DNS.
+
+Use SOCKS5 remote hostname resolution (often called `socks5h`) or SOCKS4a so names
+reach 9NS instead of the application's own DNS resolver. Hostname lookups use the
+existing DNS rules, cache, pools and DNSSEC pipeline and appear in the Query Log.
+Block rules refuse connections; `local` rules substitute the configured static
+address. Connection outcomes appear in the System Log. `bypass` does not bypass
+DNS resolution for forwarding targets. Numeric targets cannot recover a hostname
+that the client resolved itself, so hostname rules require remote resolution.
+
+Optional username/password authentication supports SOCKS5 and HTTP Basic; both
+fields must be set together. SOCKS4/4a is refused when authentication is enabled,
+since it cannot carry a password. Credentials are stored in the protected config
+file, not encrypted separately. Only TCP CONNECT is supported: no SOCKS BIND,
+UDP ASSOCIATE or ordinary HTTP forwarding. Connections are capped at 128, with a
+120-second relay idle timeout. Settings apply at the next engine start.
+
+#### Outbound DNS upstream proxy
+
+The separate `upstream_proxy` config block routes supported **DNS transports**
+through an HTTP CONNECT or SOCKS5 proxy; it does not chain local forwarding-proxy
+application traffic through that proxy. Port `0` selects `1080` for SOCKS5 or
+`8080` for HTTP. DoH/ODoH use WinHTTP and require an HTTP proxy, not SOCKS5;
+bootstrap-IP pinning is skipped in that mode because the proxy reaches the target.
+Plain DNS uses TCP when proxying, and DoT uses a tunnel. Unsupported combinations
+are rejected rather than silently falling back to direct DNS. DoQ and UDP-only
+DNSCrypt cannot traverse an upstream proxy.
+
+### 10. Configuration Reference
+
+Configuration files are located in `%ProgramData%\9NS\config.json`.
+The optional `forward_proxy` and `upstream_proxy` blocks are disabled by default;
+omitting them preserves the existing DNS-only behavior. A complete example is
+provided in [`src/config/config.example.json`](src/config/config.example.json).
 
 
 ---
@@ -163,9 +199,11 @@ Setup checks Windows/x64 compatibility, Windows' inbox `tar.exe`, the destinatio
 and its permissions, available disk space, and running 9NS processes/services.
 Before upgrading, exit 9NS from its tray menu and stop its background service
 normally so adapter DNS can be restored. If reinstalling the kernel driver, stop
-`NineNsFlt` first as well. Setup does not terminate these processes, redirect
-adapter DNS, start the background service, reboot Windows, enable test-signing or
-disable Secure Boot. The optional driver must meet Windows' signing requirements.
+`NineNsFlt` first as well. Normal installation does not terminate these processes;
+the explicit uninstall and repair modes stop the installed app and service and
+restore adapter DNS first. Setup does not start the background service, reboot
+Windows, enable test-signing or disable Secure Boot. The optional driver must meet
+Windows' signing requirements.
 
 Existing registered installations are upgraded in place. Configuration and DNS
 backups in `%ProgramData%\9NS` are not modified; an existing root `config.json`
@@ -199,7 +237,10 @@ Supported switches (case-insensitive, no duplicates):
 
 | Switch | Meaning / default |
 | --- | --- |
-| `/silent` | No setup UI; requires `/acceptlicense` |
+| `/silent` | No setup UI; `/acceptlicense` is required only for installation |
+| `/uninstall` | Remove the registered native installation |
+| `/repair` | Re-extract and repair the registered native installation |
+| `/keepdata=yes\|no` | Uninstall: keep settings/logs/DNS backup by default (`yes`) |
 | `/acceptlicense` | Accept the bundled AGPL v3 license |
 | `/dir=<absolute folder>` | Existing registered folder, otherwise Program Files\9NS |
 | `/log=<absolute file>` | New UTF-8 log file; parent folder must already exist |
@@ -226,6 +267,69 @@ Build with `python scripts/package_windows.py` followed by
 ZIP first after application changes: the setup generator reuses an existing ZIP.
 These wizard and command-line options apply to the native installer, not the
 separate optional Inno Setup script.
+
+### Uninstallation
+
+Use Windows **Installed apps / Add or remove programs → 9NS → Uninstall**, or run
+`uninstall.exe /uninstall` from the installed folder. The native uninstaller
+requests administrator rights and offers to remove settings, logs and the DNS
+backup in `%ProgramData%\9NS`; **keeping data is the default**. It requires the
+registered installation and a valid ownership manifest. A missing or unreadable
+manifest is a preflight failure, never permission to recursively delete a folder.
+
+```powershell
+$remove = Start-Process -FilePath '.\uninstall.exe' -ArgumentList @(
+    '/uninstall', '/silent', '/keepdata=no', '/log=C:\temp\9ns-uninstall.log'
+) -Wait -PassThru
+$remove.ExitCode
+```
+
+The log's parent directory must already exist and the file must not exist.
+Silent removal needs no `/acceptlicense`; Windows' quiet uninstall command keeps
+data. `/uninstall` and `/repair` cannot be combined. Installation component
+switches are not accepted with `/uninstall`, and `/dir` cannot select a different
+folder from the registered installation.
+
+Teardown stops the installed GUI, stops and deletes its service, waits for its
+watchdog, and invokes `9ns.exe --restore-dns` before removing application files.
+It then stops/deletes the driver service, removes the identified driver-store
+package and driver binary, removes shared shortcuts and the current user's
+`HKCU\Software\9NS`, removes manifest-owned files and empty directories, and
+optionally purges known runtime data. The ARP entry is removed only after file
+removal succeeds. The running `uninstall.exe` may need deletion at reboot; the
+completion report and log say when this is required. No portable copy outside
+the registered folder is intentionally stopped.
+
+Unknown files in either folder and a root-level install-folder `config.json`
+are always preserved. `/keepdata=no` removes only `config.json`,
+`system-dns-backup.json`, `service.log`, `9ns.log` and recognized log rotations
+inside the protected runtime directory; a nonempty directory is kept. DNS-restore
+and driver-removal failures are warnings, not hidden successes: inspect the log
+and resolve them before assuming networking and driver state are clean.
+
+Default removal logs use `%TEMP%\9NS-Uninstall-<random>.log`. Exit codes are `0`
+for success, `1` for a fatal operation/log failure, `2` for invalid arguments,
+`3` for preflight failure, `4` for warnings, and `1602` for cancellation. A failed
+file removal retains the ARP entry for retry. Unknown files intentionally kept
+are not permission to remove them manually without checking their ownership.
+
+`uninstall.bat` remains an emergency fallback if `uninstall.exe` is missing. It
+is **not equivalent** to the native uninstaller: it does not restore adapter DNS,
+does not provide the native cleanup/logging guarantees, and must be run elevated.
+Restore DNS first with `9ns.exe --restore-dns` while the executable still exists.
+Service command-line operations also accept `--quiet` to suppress modal dialogs.
+
+### Repair
+
+Run `uninstall.exe /repair`, or `uninstall.exe /repair /silent`, to stop the
+installed processes, restore adapter DNS and re-extract the bundled application
+payload. The recovery manifest and uninstaller are committed before payload
+replacement. `%ProgramData%\9NS` settings and unknown files remain untouched;
+this is not a reset to factory settings or an upgrade to a newer version.
+Component switches such as `/service=yes` and `/driver=yes` re-register the
+selected integrations; unchecked integrations are not removed. `/log` and the
+same exit-code contract apply. Repair is exposed as a command-line mode, not an
+advertised non-MSI Windows Repair button.
 
 ---
 

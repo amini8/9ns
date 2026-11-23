@@ -1,7 +1,80 @@
 #include "core/Resolver.h"
 
 #include <chrono>
+#include <cstring>
 #include <utility>
+
+#include <atomic>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+namespace {
+
+// Builds a one-question standard query. Kept file-local: the forwarding proxy is the
+// only production caller that needs to synthesise a query from a host name.
+dns::Bytes makeQuery(uint16_t id, const std::string& name, uint16_t type) {
+    dns::Bytes query(dns::kHeaderSize, 0);
+    const auto writeU16 = [&query](size_t offset, uint16_t value) {
+        query[offset] = static_cast<uint8_t>(value >> 8);
+        query[offset + 1] = static_cast<uint8_t>(value & 0xFF);
+    };
+    writeU16(0, id);
+    writeU16(2, 0x0100);  // RD, no error
+    writeU16(4, 1);       // one question
+    size_t start = 0;
+    while (start < name.size()) {
+        size_t dot = name.find('.', start);
+        if (dot == std::string::npos) dot = name.size();
+        const auto length = dot - start;
+        if (length == 0 || length > 63) return {};
+        query.push_back(static_cast<uint8_t>(length));
+        query.insert(query.end(), name.begin() + static_cast<std::ptrdiff_t>(start),
+                     name.begin() + static_cast<std::ptrdiff_t>(dot));
+        start = dot + 1;
+    }
+    query.push_back(0);  // root label
+    query.push_back(static_cast<uint8_t>(type >> 8));
+    query.push_back(static_cast<uint8_t>(type & 0xFF));
+    query.push_back(0);
+    query.push_back(1);  // class IN
+    return query;
+}
+
+// Renders the A/AAAA rdata of a reply. Returns false when any rdata has the wrong length.
+bool collectAddresses(const dns::Bytes& reply, uint16_t type, std::vector<std::string>& out) {
+    dns::ParsedMessage message;
+    if (!dns::parseMessage(reply, message)) return false;
+    for (const dns::Record& record : message.answers) {
+        if (record.type != type || record.rclass != 1) continue;
+        if (type == dns::kTypeA && record.rdata.size() != 4) return false;
+        if (type == dns::kTypeAaaa && record.rdata.size() != 16) return false;
+        char text[64] = {};
+        if (!inet_ntop(type == dns::kTypeA ? AF_INET : AF_INET6, record.rdata.data(), text, sizeof(text)))
+            return false;
+        out.emplace_back(text);
+    }
+    return true;
+}
+
+// True when every address is the all-zero unspecified address, which is what a
+// null_ip block rule synthesises.
+bool allUnspecified(const std::vector<std::string>& addresses) {
+    if (addresses.empty()) return false;
+    for (const std::string& address : addresses) {
+        if (address == "0.0.0.0" || address == "::") continue;
+        return false;
+    }
+    return true;
+}
+
+// Query ids are only used to match a reply to its request, never for caching, so a
+// process-wide counter is enough. resolve() overwrites the id for every reply.
+uint16_t nextQueryId() {
+    static std::atomic<uint16_t> counter{0};
+    return ++counter;
+}
+
+}  // namespace
 
 Resolver::Resolver(const Config& config, Logger& logger)
     : logger_(logger),
@@ -12,7 +85,7 @@ Resolver::Resolver(const Config& config, Logger& logger)
 
     // Instantiate upstreams
     for (const UpstreamConfig& item : config.upstreams) {
-        upstreams_[item.name] = Upstream::create(item);
+        upstreams_[item.name] = Upstream::create(item, config.upstreamProxy);
     }
 
     // Instantiate pools
@@ -185,4 +258,39 @@ dns::Bytes Resolver::resolve(const dns::Bytes& query, const dns::Query& parsed, 
     event.action = "Resolved";
     emitEvent(response);
     return response;
+}
+
+LookupVerdict Resolver::resolveAddresses(const std::string& name, const std::string& clientIp,
+                                        std::vector<std::string>& addresses) {
+    addresses.clear();
+    // A block rule is honoured without an upstream query, so a blocked name is never
+    // contacted. Without this check the null_ip/nxdomain replies would look resolvable.
+    const RuleConfig* rule = rules_.find(name, dns::kTypeA);
+    if (rule && rule->action == "block") {
+        logger_.log(Logger::Level::Debug, "forward proxy refused blocked name " + name + " (" + rule->blockMode + ")");
+        return LookupVerdict::Blocked;
+    }
+
+    // A "bypass" rule has no meaning for a CONNECT target, so it resolves normally.
+    // A "local" rule needs no special case: resolve() already synthesises the static IP.
+    for (const uint16_t type : {dns::kTypeA, dns::kTypeAaaa}) {
+        const dns::Bytes query = makeQuery(nextQueryId(), name, type);
+        if (query.empty()) return LookupVerdict::Failed;
+        dns::Query parsed;
+        if (!dns::parseQuery(query, parsed)) return LookupVerdict::Failed;
+        const dns::Bytes reply = resolve(query, parsed, clientIp);
+        if (reply.empty()) return LookupVerdict::Blocked;  // block_mode "drop"
+        uint8_t rcode = dns::kRcodeNoError;
+        if (!dns::responseCode(reply, rcode)) return LookupVerdict::Failed;
+        if (rcode == dns::kRcodeNxDomain || rcode == dns::kRcodeRefused) {
+            if (addresses.empty()) return LookupVerdict::NotFound;
+            break;
+        }
+        if (rcode != dns::kRcodeNoError) return LookupVerdict::Failed;
+        std::vector<std::string> found;
+        if (!collectAddresses(reply, type, found)) return LookupVerdict::Failed;
+        if (allUnspecified(found)) return LookupVerdict::Blocked;  // block_mode "null_ip"
+        addresses.insert(addresses.end(), found.begin(), found.end());
+    }
+    return addresses.empty() ? LookupVerdict::NotFound : LookupVerdict::Allowed;
 }

@@ -1,6 +1,9 @@
 #include <QtTest/QtTest>
 
+#include <QCheckBox>
 #include <QComboBox>
+#include <QLineEdit>
+#include <QSpinBox>
 #include <QImage>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -164,6 +167,10 @@ void TestSettingsPages::settingsRoundTripPreservesRouting() {
         input.dnssecValidation = i == 0;
         input.autostart = i != 0;
         input.closeToTray = i == 0;
+        input.forwardProxy.enabled = i != 0;
+        input.forwardProxy.port = i == 0 ? 1 : (i == 1 ? 1080 : 65535);
+        input.forwardProxy.username = i == 0 ? "" : " local user ";
+        input.forwardProxy.password = i == 0 ? "" : " secret password ";
         input.logLevel = levels[i];
         input.logFile = i == 0 ? "" : "offline-log.txt";
         page.setValues(input);
@@ -180,6 +187,23 @@ void TestSettingsPages::settingsRoundTripPreservesRouting() {
         QCOMPARE(output.dnssecValidation, input.dnssecValidation);
         QCOMPARE(output.autostart, input.autostart);
         QCOMPARE(output.closeToTray, input.closeToTray);
+        QCOMPARE(output.forwardProxy.enabled, input.forwardProxy.enabled);
+        QCOMPARE(output.forwardProxy.port, input.forwardProxy.port);
+        QCOMPARE(output.forwardProxy.username, input.forwardProxy.username);
+        QCOMPARE(output.forwardProxy.password, input.forwardProxy.password);
+        auto* enabled = page.findChild<QCheckBox*>("forwardProxyEnabled");
+        auto* port = page.findChild<QSpinBox*>("forwardProxyPort");
+        auto* username = page.findChild<QLineEdit*>("forwardProxyUsername");
+        auto* password = page.findChild<QLineEdit*>("forwardProxyPassword");
+        QVERIFY(enabled && port && username && password);
+        QCOMPARE(password->echoMode(), QLineEdit::Password);
+        QCOMPARE(port->isEnabled(), input.forwardProxy.enabled);
+        QCOMPARE(username->isEnabled(), input.forwardProxy.enabled);
+        QCOMPARE(password->isEnabled(), input.forwardProxy.enabled);
+        enabled->setChecked(!input.forwardProxy.enabled);
+        QCOMPARE(port->isEnabled(), !input.forwardProxy.enabled);
+        QCOMPARE(username->isEnabled(), !input.forwardProxy.enabled);
+        QCOMPARE(password->isEnabled(), !input.forwardProxy.enabled);
         QCOMPARE(output.logLevel, input.logLevel);
         QCOMPARE(output.logFile, input.logFile);
         QCOMPARE(output.defaultTarget, original.defaultTarget);

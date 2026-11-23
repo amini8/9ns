@@ -10,6 +10,20 @@
   "dnssec_validation": true,
   "autostart": false,
   "close_to_tray": true,
+  "forward_proxy": {
+    "enabled": false,
+    "port": 1080,
+    "username": "",
+    "password": ""
+  },
+  "upstream_proxy": {
+    "enabled": false,
+    "type": "socks5",
+    "address": "",
+    "port": 0,
+    "username": "",
+    "password": ""
+  },
   "default_target": "fast-pool",
   "upstreams": [
     {

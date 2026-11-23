@@ -30,6 +30,10 @@ signals:
     void openDataFolderRequested();
 
 private:
+    QCheckBox* forwardProxyCheck_ = nullptr;
+    QSpinBox* forwardProxyPort_ = nullptr;
+    QLineEdit* forwardProxyUsername_ = nullptr;
+    QLineEdit* forwardProxyPassword_ = nullptr;
     QSpinBox* portSpin_ = nullptr;
     QSpinBox* cacheSpin_ = nullptr;
     QSpinBox* minTtlSpin_ = nullptr;

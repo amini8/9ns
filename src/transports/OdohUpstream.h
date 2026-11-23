@@ -55,6 +55,9 @@ public:
     bool exchange(const dns::Bytes& query, dns::Bytes& response, std::string& error) override;
 
 private:
+    // Copies the upstream proxy into Impl, whose HTTP helper cannot see this object.
+    void onUpstreamProxyChanged() override;
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

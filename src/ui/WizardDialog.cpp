@@ -79,6 +79,11 @@ void WizardDialog::buildUi() {
     optLayout->addWidget(systemDnsCheck_);
     optLayout->addWidget(leakPreventCheck_);
     optLayout->addWidget(dnssecCheck_);
+    forwardProxyCheck_ = new QCheckBox(tr("Enable local SOCKS / HTTP CONNECT proxy (port 1080)"), optionsBox);
+    forwardProxyCheck_->setObjectName(QStringLiteral("forwardProxyEnabled"));
+    forwardProxyCheck_->setChecked(false);
+    forwardProxyCheck_->setToolTip(tr("Optional loopback-only proxy. SOCKS5, SOCKS4a and HTTP CONNECT share one port. Configure authentication and the port in Settings."));
+    optLayout->addWidget(forwardProxyCheck_);
     root->addWidget(optionsBox);
 
     presetRadio_->setChecked(true);
@@ -104,6 +109,7 @@ Config WizardDialog::resultConfig() const {
     config.systemDns = systemDnsCheck_->isChecked();
     config.preventDnsLeaks = leakPreventCheck_->isChecked();
     config.dnssecValidation = dnssecCheck_->isChecked();
+    config.forwardProxy.enabled = forwardProxyCheck_->isChecked();
     config.upstreams.clear();
 
     if (presetRadio_->isChecked()) {

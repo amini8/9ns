@@ -1,4 +1,5 @@
 #include "core/Config.h"
+#include "transports/Stamp.h"
 
 #include <cstdint>
 #include <fstream>
@@ -130,6 +131,41 @@ RuleConfig parseRule(const json& item) {
     return rule;
 }
 
+void checkProxyObject(const json& item, const std::string& name, const std::set<std::string>& keys) {
+    if (!item.is_object()) {
+        throw std::runtime_error(name + " must be a JSON object");
+    }
+    for (auto it = item.begin(); it != item.end(); ++it) {
+        if (keys.count(it.key()) == 0) {
+            throw std::runtime_error(name + ": unknown option '" + it.key() + "'");
+        }
+    }
+}
+
+uint16_t proxyPort(const json& item, uint16_t fallback, const std::string& name) {
+    if (!item.contains("port")) {
+        return fallback;
+    }
+    const auto& value = item.at("port");
+    if (!value.is_number_integer() || (value.is_number_unsigned() && value.get<uint64_t>() > 65535)) {
+        throw std::runtime_error(name + ".port must be an integer between 0 and 65535");
+    }
+    const auto port = value.get<int64_t>();
+    if (port < 0 || port > 65535) {
+        throw std::runtime_error(name + ".port must be between 0 and 65535");
+    }
+    return static_cast<uint16_t>(port);
+}
+
+void validateCredentials(const std::string& username, const std::string& password, const std::string& name) {
+    if (username.empty() != password.empty() || username.size() > 255 || password.size() > 255) {
+        throw std::runtime_error(name + ": username and password must be paired and at most 255 bytes each");
+    }
+    if (username.find('\0') != std::string::npos || password.find('\0') != std::string::npos) {
+        throw std::runtime_error(name + ": credentials must not contain NUL");
+    }
+}
+
 Config fromJson(const json& root) {
     if (!root.is_object()) {
         throw std::runtime_error("the config must be a JSON object");
@@ -158,6 +194,24 @@ Config fromJson(const json& root) {
     config.dnssecValidation = root.value("dnssec_validation", defaults.dnssecValidation);
     config.autostart = root.value("autostart", defaults.autostart);
     config.closeToTray = root.value("close_to_tray", defaults.closeToTray);
+    if (root.contains("forward_proxy")) {
+        const auto& item = root.at("forward_proxy");
+        checkProxyObject(item, "forward_proxy", {"enabled", "port", "username", "password"});
+        config.forwardProxy.enabled = item.value("enabled", false);
+        config.forwardProxy.port = proxyPort(item, 1080, "forward_proxy");
+        config.forwardProxy.username = item.value("username", std::string());
+        config.forwardProxy.password = item.value("password", std::string());
+    }
+    if (root.contains("upstream_proxy")) {
+        const auto& item = root.at("upstream_proxy");
+        checkProxyObject(item, "upstream_proxy", {"enabled", "type", "address", "port", "username", "password"});
+        config.upstreamProxy.enabled = item.value("enabled", false);
+        config.upstreamProxy.type = item.value("type", std::string("socks5"));
+        config.upstreamProxy.address = item.value("address", std::string());
+        config.upstreamProxy.port = proxyPort(item, 0, "upstream_proxy");
+        config.upstreamProxy.username = item.value("username", std::string());
+        config.upstreamProxy.password = item.value("password", std::string());
+    }
 
     config.defaultTarget = root.value("default_target", root.value("default_upstream", defaults.defaultTarget));
     config.defaultUpstream = config.defaultTarget;
@@ -259,7 +313,7 @@ json toJson(const Config& config) {
         rules.push_back(item);
     }
 
-    return json{
+    json result = {
         {"listen_port", config.listenPort},
         {"cache_entries", config.cacheEntries},
         {"min_ttl", config.minTtl},
@@ -279,6 +333,21 @@ json toJson(const Config& config) {
         {"log_file", config.logFile},
         {"log_level", config.logLevel},
     };
+    json forward = json::object();
+    if (config.forwardProxy.enabled) forward["enabled"] = true;
+    if (config.forwardProxy.port != 1080) forward["port"] = config.forwardProxy.port;
+    if (!config.forwardProxy.username.empty()) forward["username"] = config.forwardProxy.username;
+    if (!config.forwardProxy.password.empty()) forward["password"] = config.forwardProxy.password;
+    if (!forward.empty()) result["forward_proxy"] = std::move(forward);
+    json upstream = json::object();
+    if (config.upstreamProxy.enabled) upstream["enabled"] = true;
+    if (config.upstreamProxy.type != "socks5") upstream["type"] = config.upstreamProxy.type;
+    if (!config.upstreamProxy.address.empty()) upstream["address"] = config.upstreamProxy.address;
+    if (config.upstreamProxy.port != 0) upstream["port"] = config.upstreamProxy.port;
+    if (!config.upstreamProxy.username.empty()) upstream["username"] = config.upstreamProxy.username;
+    if (!config.upstreamProxy.password.empty()) upstream["password"] = config.upstreamProxy.password;
+    if (!upstream.empty()) result["upstream_proxy"] = std::move(upstream);
+    return result;
 }
 
 }  // namespace
@@ -308,6 +377,25 @@ void validateConfig(const Config& config) {
     if (config.listenPort == 0) {
         throw std::runtime_error("listen_port must be between 1 and 65535");
     }
+    if (config.forwardProxy.port == 0 || config.forwardProxy.port == config.listenPort) {
+        throw std::runtime_error("forward_proxy.port must be nonzero and distinct from listen_port");
+    }
+    validateCredentials(config.forwardProxy.username, config.forwardProxy.password, "forward_proxy");
+    validateCredentials(config.upstreamProxy.username, config.upstreamProxy.password, "upstream_proxy");
+    if (config.upstreamProxy.type != "socks5" && config.upstreamProxy.type != "http") {
+        throw std::runtime_error("upstream_proxy.type must be socks5 or http");
+    }
+    if (config.upstreamProxy.enabled && (config.upstreamProxy.address.empty() || config.upstreamProxy.port == 0)) {
+        throw std::runtime_error("upstream_proxy requires a nonempty address and nonzero port when enabled");
+    }
+    for (const unsigned char c : config.upstreamProxy.address) {
+        if (c <= 32 || c >= 127 || c == '/' || c == '\\' || c == ';' || c == '=' || c == '@' || c == '?' || c == '#') {
+            throw std::runtime_error("upstream_proxy.address must be a hostname or IP literal, not a URL or proxy list");
+        }
+    }
+    if (config.upstreamProxy.type == "http" && config.upstreamProxy.username.find(':') != std::string::npos) {
+        throw std::runtime_error("upstream_proxy.username must not contain ':' for HTTP Basic authentication");
+    }
     if (config.cacheEntries > kMaxCacheEntries) {
         throw std::runtime_error("cache_entries must be at most 1000000");
     }
@@ -328,6 +416,24 @@ void validateConfig(const Config& config) {
         }
         if (up.type == "nextdns") {
             throw std::runtime_error("upstream '" + up.name + "': " + std::string(kNextDnsRemoved));
+        }
+        if (config.upstreamProxy.enabled) {
+            std::string transport = up.type;
+            if (!up.stamp.empty()) {
+                DnsStamp stamp;
+                std::string error;
+                if (!parseStamp(up.stamp, stamp, error)) {
+                    throw std::runtime_error("upstream '" + up.name + "': " + error);
+                }
+                transport = stamp.protocol == DnsStamp::Protocol::DoH ? "doh" :
+                            stamp.protocol == DnsStamp::Protocol::Odoh ? "odoh" : "unsupported";
+            }
+            if (transport != "plain" && transport != "dot" && transport != "doh" && transport != "odoh") {
+                throw std::runtime_error("upstream '" + up.name + "': transport is not supported with upstream_proxy (DoQ and DNSCrypt/relays are disabled)");
+            }
+            if (config.upstreamProxy.type == "socks5" && (transport == "doh" || transport == "odoh")) {
+                throw std::runtime_error("upstream '" + up.name + "': DoH/ODoH require an HTTP upstream_proxy, not SOCKS5");
+            }
         }
         if (up.stamp.empty()) {
             if (kUpstreamTypes.count(up.type) == 0) {

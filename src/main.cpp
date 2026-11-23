@@ -3,6 +3,8 @@
 #include <shellapi.h>
 
 #include <QApplication>
+#include <QAbstractNativeEventFilter>
+#include <vector>
 
 #include <cerrno>
 #include <cstdint>
@@ -22,6 +24,21 @@
 namespace {
 
 constexpr wchar_t kAppTitle[] = L"9NS";
+
+class MaintenanceShutdownFilter : public QAbstractNativeEventFilter {
+public:
+    bool nativeEventFilter(const QByteArray&, void* message, qintptr* result) override {
+        const auto* event = static_cast<MSG*>(message);
+        if (messageId_ && event->message == messageId_) {
+            QApplication::quit();
+            *result = 0;
+            return true;
+        }
+        return false;
+    }
+private:
+    const UINT messageId_ = RegisterWindowMessageW(L"9NS.MaintenanceShutdown");
+};
 
 std::wstring executableDirectory() {
     std::wstring path(MAX_PATH, L'\0');
@@ -90,6 +107,7 @@ bool parseWatchdogArgs(const std::wstring& args, unsigned long& pid, unsigned lo
 int main(int argc, char* argv[]) {
     // The watchdog runs as this same executable. It must not create a Qt application or a window.
     std::wstring args;
+    std::vector<std::wstring> tokens;
     int wideCount = 0;
     LPWSTR* wideArgs = CommandLineToArgvW(GetCommandLineW(), &wideCount);
     if (wideArgs) {
@@ -98,6 +116,7 @@ int main(int argc, char* argv[]) {
                 args += L' ';
             }
             args += wideArgs[i];
+            tokens.emplace_back(wideArgs[i]);
         }
         LocalFree(wideArgs);
     }
@@ -119,26 +138,39 @@ int main(int argc, char* argv[]) {
     if (args == L"--service") {
         return service::runService();
     }
-    if (args == L"--install-service") {
-        std::string err;
-        if (service::installService(err)) {
-            MessageBoxW(nullptr, L"9NS Service installed successfully.", kAppTitle, MB_OK | MB_ICONINFORMATION);
-            return 0;
-        } else {
-            MessageBoxW(nullptr, widen(err).c_str(), kAppTitle, MB_OK | MB_ICONERROR);
-            return 1;
-        }
+    bool quiet = false;
+    std::wstring action;
+    for (const auto& token : tokens) {
+        if (token == L"--quiet" && !quiet) quiet = true;
+        else if ((token == L"--install-service" || token == L"--uninstall-service" || token == L"--restore-dns") && action.empty()) action = token;
+        else if (!action.empty() || quiet || token.compare(0, 2, L"--") == 0) return ERROR_INVALID_PARAMETER;
     }
-    if (args == L"--uninstall-service") {
-        std::string err;
-        if (service::uninstallService(err)) {
-            MessageBoxW(nullptr, L"9NS Service uninstalled successfully.", kAppTitle, MB_OK | MB_ICONINFORMATION);
-            return 0;
-        } else {
-            MessageBoxW(nullptr, widen(err).c_str(), kAppTitle, MB_OK | MB_ICONERROR);
-            return 1;
+    if (!action.empty()) {
+        std::string error;
+        bool ok = false;
+        if (action == L"--restore-dns") {
+            std::wstring directory;
+            if (!protected_runtime::ensureDataDirectory(directory, error)) return 1;
+            WSADATA wsa{};
+            if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 1;
+            try {
+                Logger logger;
+                logger.open(std::filesystem::path(directory + L"\\" + protected_runtime::kServiceLogFileName), Logger::Level::Info);
+                SystemDns dns(std::filesystem::path(directory + L"\\" + protected_runtime::kBackupFileName), logger);
+                const bool restored = dns.restoreLeftover();
+                const bool cleared = SystemDns::clearLeakPreventionPolicy();
+                ok = restored && cleared;
+                if (!ok) logger.log(Logger::Level::Error, "DNS restoration or leak-prevention policy cleanup failed");
+            } catch (const std::exception&) { ok = false; }
+            WSACleanup();
+            return ok ? 0 : 1;
         }
+        ok = action == L"--install-service" ? service::installService(error) : service::uninstallService(error);
+        if (!quiet) MessageBoxW(nullptr, ok ? L"9NS service action completed." : widen(error).c_str(),
+                                kAppTitle, MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONERROR));
+        return ok ? 0 : 1;
     }
+    if (quiet) return ERROR_INVALID_PARAMETER;
 
     // Two instances would fight over port 53 and over the adapter DNS backup.
     HANDLE instanceLock = CreateMutexW(nullptr, FALSE, L"Local\\9NSSingleInstance");
@@ -179,6 +211,8 @@ int main(int argc, char* argv[]) {
     {
         // Destruction runs in reverse: window, then engine (restores adapter DNS), then logger, then app.
         QApplication app(argc, argv);
+        MaintenanceShutdownFilter maintenanceShutdown;
+        app.installNativeEventFilter(&maintenanceShutdown);
         QApplication::setApplicationName(QStringLiteral("9NS"));
         Theme::apply(app);
 

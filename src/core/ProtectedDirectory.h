@@ -332,6 +332,64 @@ inline PolicyResult planManifestDeletions(const InstallManifest& manifest, const
     return policyPass();
 }
 
+inline PolicyResult planTeardown(const InstallManifest& manifest, const std::wstring& root, DeletionPlan& out) {
+    out = {};
+    const auto check = validateInstallDestination(root);
+    if (!check.ok) return check;
+    DeletionPlan planned;
+    const auto result = planManifestDeletions(manifest, root, planned);
+    if (!result.ok) return result;
+    std::vector<std::wstring> seen;
+    for (const auto* entries : {&planned.files, &planned.directories}) {
+        for (const auto& entry : *entries) {
+            if (std::find(seen.begin(), seen.end(), entry) != seen.end())
+                return policyFail("duplicate teardown entry: '" + narrowForError(entry) + "'");
+            seen.push_back(entry);
+        }
+    }
+    for (const auto& file : planned.files) {
+        for (const auto& entry : seen) {
+            if (entry != file && isContainedPath(file, entry))
+                return policyFail("file used as a manifest directory: '" + narrowForError(file) + "'");
+        }
+    }
+    const auto config = normalizePath(root) + L"\\config.json";
+    planned.files.erase(std::remove(planned.files.begin(), planned.files.end(), config), planned.files.end());
+    planned.directories.erase(std::remove(planned.directories.begin(), planned.directories.end(), config), planned.directories.end());
+    out = std::move(planned);
+    return policyPass();
+}
+
+inline bool isKnownRuntimeFile(const std::wstring& name) {
+    if (!validateSegment(name).ok) return false;
+    const auto normalized = normalizePath(name);
+    for (const auto* file : {L"config.json", L"config.json.tmp", L"system-dns-backup.json",
+                             L"system-dns-backup.json.tmp", L"9ns.log", L"service.log"})
+        if (normalized == file) return true;
+    for (const auto* base : {L"9ns.log.", L"service.log."}) {
+        const std::wstring prefix(base);
+        if (normalized.compare(0, prefix.size(), prefix) != 0) continue;
+        const auto suffix = normalized.substr(prefix.size());
+        if (!suffix.empty() && suffix.size() <= 9 && suffix[0] >= L'1' && suffix[0] <= L'9' &&
+            std::all_of(suffix.begin(), suffix.end(), [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; })) return true;
+    }
+    return false;
+}
+
+inline PolicyResult planDataPurge(const std::wstring& root, const std::wstring& programData,
+                                  const std::vector<std::wstring>& enumeratedFiles, DeletionPlan& out) {
+    out = {};
+    const auto check = validateRuntimeDataPath(root, programData);
+    if (!check.ok) return check;
+    if (normalizePath(root) != normalizePath(programData) + L"\\9ns")
+        return policyFail("purge root is not the 9NS data directory");
+    for (const auto& file : enumeratedFiles) {
+        if (!validateSegment(file).ok) { out = {}; return policyFail("unsafe enumerated runtime filename"); }
+        if (isKnownRuntimeFile(file)) out.files.push_back(normalizePath(root) + L"\\" + file);
+    }
+    return policyPass();
+}
+
 // UTF-8 text of install-manifest.txt written at install time.
 inline std::string buildManifestFileContent(const InstallManifest& manifest) {
     std::string text =
@@ -471,6 +529,16 @@ inline std::wstring quoteCommandLineArgument(const std::wstring& argument) {
 // doubled quotes keep the whole path one token for cmd /c even with spaces.
 inline std::wstring buildUninstallString(const std::wstring& cmdExePath, const std::wstring& uninstallScriptPath) {
     return quoteCommandLineArgument(cmdExePath) + L" /c \"\"" + uninstallScriptPath + L"\"\"";
+}
+
+inline std::wstring buildNativeUninstallString(const std::wstring& executable, bool quiet = false) {
+    if (!validateLocalPath(executable).ok) return {};
+    return L"\"" + executable + L"\" /uninstall" + (quiet ? L" /silent /keepdata=yes" : L"");
+}
+
+inline std::wstring buildNativeRepairString(const std::wstring& executable) {
+    if (!validateLocalPath(executable).ok) return {};
+    return L"\"" + executable + L"\" /repair";
 }
 
 // Values interpolated into netsh's own name="..." syntax: netsh parses that

@@ -42,7 +42,25 @@ struct RuleConfig {
     std::string hostsFile;               // path to local hosts file or blocklist
 };
 
+struct ForwardProxyConfig {
+    bool enabled = false;
+    uint16_t port = 1080;
+    std::string username;
+    std::string password;
+};
+
+struct UpstreamProxyConfig {
+    bool enabled = false;
+    std::string type = "socks5";
+    std::string address;
+    uint16_t port = 0;
+    std::string username;
+    std::string password;
+};
+
 struct Config {
+    ForwardProxyConfig forwardProxy;
+    UpstreamProxyConfig upstreamProxy;
     uint16_t listenPort = 53;
     std::size_t cacheEntries = 4096;  // 0 turns the reply cache off
     uint32_t minTtl = 0;              // 0 keeps upstream TTL

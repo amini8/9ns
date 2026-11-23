@@ -162,13 +162,34 @@ bool uninstallService(std::string& error) {
         return false;
     }
 
-    SC_HANDLE svc = OpenServiceW(scm, kServiceName, DELETE);
+    SC_HANDLE svc = OpenServiceW(scm, kServiceName, DELETE | SERVICE_STOP | SERVICE_QUERY_STATUS);
     if (!svc) {
-        error = "cannot open service (error " + std::to_string(GetLastError()) + ")";
+        const DWORD code = GetLastError();
         CloseServiceHandle(scm);
+        if (code == ERROR_SERVICE_DOES_NOT_EXIST) return true;
+        error = "cannot open service (error " + std::to_string(code) + ")";
         return false;
     }
 
+    SERVICE_STATUS_PROCESS status{};
+    DWORD needed = 0;
+    bool stopped = false;
+    const ULONGLONG deadline = GetTickCount64() + 60000;
+    do {
+        if (!QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, reinterpret_cast<BYTE*>(&status), sizeof(status), &needed)) break;
+        if (status.dwCurrentState == SERVICE_STOPPED) { stopped = true; break; }
+        if (status.dwCurrentState != SERVICE_STOP_PENDING) {
+            SERVICE_STATUS ignored{};
+            if (!ControlService(svc, SERVICE_CONTROL_STOP, &ignored) && GetLastError() != ERROR_SERVICE_NOT_ACTIVE) break;
+        }
+        Sleep(200);
+    } while (GetTickCount64() < deadline);
+    if (!stopped) {
+        error = "service did not stop; it was not deleted (DNS restoration may still be running)";
+        CloseServiceHandle(svc);
+        CloseServiceHandle(scm);
+        return false;
+    }
     const bool ok = DeleteService(svc) != FALSE;
     if (!ok) {
         error = "cannot delete service (error " + std::to_string(GetLastError()) + ")";

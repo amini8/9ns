@@ -36,6 +36,10 @@ private slots:
     void defaultConfigIsValidAndRoundTrips();
     void everyRemainingProtocolRoundTrips();
     void poolsAndRulesRoundTrip();
+    void proxyBlocksRoundTrip();
+    void proxyDefaultsAreOffAndOmitted();
+    void proxyValidationRejectsBadValues();
+    void upstreamProxyRefusesLeakingTransports();
     void missingFileYieldsDefaults();
     void invalidJsonThrows();
     void nextDnsTypeIsRejectedEvenWithStamp();
@@ -94,8 +98,121 @@ void TestConfig::everyRemainingProtocolRoundTrips() {
     }
 }
 
-void TestConfig::poolsAndRulesRoundTrip() {
+void TestConfig::proxyBlocksRoundTrip() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const std::filesystem::path path = std::filesystem::path(dir.path().toStdString()) / "proxy.json";
+
     Config config = defaultConfig();
+    config.forwardProxy.enabled = true;
+    config.forwardProxy.port = 1081;
+    config.forwardProxy.username = "user";
+    config.forwardProxy.password = "secret";
+    config.upstreamProxy.enabled = true;
+    config.upstreamProxy.type = "http";
+    config.upstreamProxy.address = "proxy.corp.test";
+    config.upstreamProxy.port = 8080;
+    config.upstreamProxy.username = "user";
+    config.upstreamProxy.password = "secret";
+    validateConfig(config);
+    saveConfig(path, config);
+
+    const Config loaded = loadConfig(path);
+    QVERIFY(loaded.forwardProxy.enabled);
+    QCOMPARE(loaded.forwardProxy.port, uint16_t(1081));
+    QCOMPARE(loaded.forwardProxy.username, std::string("user"));
+    QCOMPARE(loaded.forwardProxy.password, std::string("secret"));
+    QVERIFY(loaded.upstreamProxy.enabled);
+    QCOMPARE(loaded.upstreamProxy.type, std::string("http"));
+    QCOMPARE(loaded.upstreamProxy.address, std::string("proxy.corp.test"));
+    QCOMPARE(loaded.upstreamProxy.port, uint16_t(8080));
+}
+
+void TestConfig::proxyDefaultsAreOffAndOmitted() {
+    // A default config must not gain proxy keys, so existing installs are unaffected.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const std::filesystem::path path = std::filesystem::path(dir.path().toStdString()) / "default.json";
+    Config config = defaultConfig();
+    validateConfig(config);
+    saveConfig(path, config);
+    const std::string text = readFile(path);
+    QVERIFY(text.find("forward_proxy") == std::string::npos);
+    QVERIFY(text.find("upstream_proxy") == std::string::npos);
+    QVERIFY(!loadConfig(path).forwardProxy.enabled);
+    QVERIFY(!loadConfig(path).upstreamProxy.enabled);
+}
+
+void TestConfig::proxyValidationRejectsBadValues() {
+    // The proxy port must not collide with the DNS listener.
+    Config collision = defaultConfig();
+    collision.forwardProxy.enabled = true;
+    collision.forwardProxy.port = collision.listenPort;
+    QVERIFY_EXCEPTION_THROWN(validateConfig(collision), std::runtime_error);
+
+    // Half-set credentials are a configuration error, not a silent downgrade to no auth.
+    Config halfCredentials = defaultConfig();
+    halfCredentials.forwardProxy.username = "user";
+    QVERIFY_EXCEPTION_THROWN(validateConfig(halfCredentials), std::runtime_error);
+
+    Config halfUpstream = defaultConfig();
+    halfUpstream.upstreamProxy.password = "secret";
+    QVERIFY_EXCEPTION_THROWN(validateConfig(halfUpstream), std::runtime_error);
+
+    Config badType = defaultConfig();
+    badType.upstreamProxy.type = "socks4";
+    QVERIFY_EXCEPTION_THROWN(validateConfig(badType), std::runtime_error);
+
+    Config emptyAddress = defaultConfig();
+    emptyAddress.upstreamProxy.enabled = true;
+    emptyAddress.upstreamProxy.type = "socks5";
+    QVERIFY_EXCEPTION_THROWN(validateConfig(emptyAddress), std::runtime_error);
+
+    Config zeroPort = defaultConfig();
+    zeroPort.forwardProxy.enabled = true;
+    zeroPort.forwardProxy.port = 0;
+    QVERIFY_EXCEPTION_THROWN(validateConfig(zeroPort), std::runtime_error);
+}
+
+void TestConfig::upstreamProxyRefusesLeakingTransports() {
+    // Fail closed: a transport that would bypass the corporate proxy is a leak, not a warning.
+    Config config = defaultConfig();
+    config.upstreams.clear();
+    UpstreamConfig doq;
+    doq.name = "leaky";
+    doq.type = "doq";
+    doq.address = "quic.example.test";
+    config.upstreams.push_back(doq);
+    config.defaultTarget = doq.name;
+    config.defaultUpstream = doq.name;
+    config.upstreamProxy.enabled = true;
+    config.upstreamProxy.type = "socks5";
+    config.upstreamProxy.address = "proxy.corp.test";
+    config.upstreamProxy.port = 1080;
+    QVERIFY_EXCEPTION_THROWN(validateConfig(config), std::runtime_error);
+
+    // DoH needs an HTTP proxy: WinHTTP has no SOCKS support.
+    Config socksDoh = defaultConfig();
+    socksDoh.upstreams.clear();
+    UpstreamConfig doh;
+    doh.name = "doh";
+    doh.type = "doh";
+    doh.address = "https://example.test/dns-query";
+    socksDoh.upstreams.push_back(doh);
+    socksDoh.defaultTarget = doh.name;
+    socksDoh.defaultUpstream = doh.name;
+    socksDoh.upstreamProxy.enabled = true;
+    socksDoh.upstreamProxy.type = "socks5";
+    socksDoh.upstreamProxy.address = "proxy.corp.test";
+    socksDoh.upstreamProxy.port = 1080;
+    QVERIFY_EXCEPTION_THROWN(validateConfig(socksDoh), std::runtime_error);
+
+    // The same DoH upstream is accepted once the proxy is HTTP.
+    socksDoh.upstreamProxy.type = "http";
+    validateConfig(socksDoh);
+}
+
+void TestConfig::poolsAndRulesRoundTrip() {    Config config = defaultConfig();
 
     PoolConfig pool;
     pool.name = "fast-pool";

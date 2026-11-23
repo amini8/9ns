@@ -84,8 +84,70 @@ private slots:
         QVERIFY(options.destination == L"original" && options.logPath == L"original log");
     }
 
-    void licenseAndSilentLaunch() {
-        const std::vector<std::vector<std::wstring>> valid = {
+    void uninstallAndRepairModes() {
+        setup::Options options;
+        std::wstring error;
+        QVERIFY(setup::parseOptions({L"/uninstall"}, options, error));
+        QVERIFY(options.mode == setup::Mode::Uninstall);
+        QVERIFY(options.keepData);
+        // Removal is not licence acceptance, so /silent needs no /acceptlicense here.
+        QVERIFY(setup::parseOptions({L"/UNINSTALL", L"/silent", L"/keepdata=no"}, options, error));
+        QVERIFY(options.mode == setup::Mode::Uninstall);
+        QVERIFY(options.silent);
+        QVERIFY(!options.keepData);
+        QVERIFY(setup::parseOptions({L"/repair", L"/silent"}, options, error));
+        QVERIFY(options.mode == setup::Mode::Repair);
+        QVERIFY(setup::parseOptions({L"/uninstall", L"/keepdata=yes"}, options, error));
+        QVERIFY(options.keepData);
+    }
+
+    void uninstallRejectsInstallOptions() {
+        // The two modes cannot be combined.
+        setup::Options options;
+        std::wstring error;
+        QVERIFY(!setup::parseOptions({L"/uninstall", L"/repair"}, options, error));
+        QVERIFY(!error.empty());
+        // Installation component toggles make no sense when removing.
+        for (const auto* flag : {L"/desktop=yes", L"/startmenu=yes", L"/service=yes",
+                                 L"/driver=yes", L"/launch=yes"}) {
+            setup::Options rejecting;
+            std::wstring message;
+            QVERIFY(!setup::parseOptions({L"/uninstall", flag}, rejecting, message));
+            QVERIFY(!message.empty());
+        }
+        /* /keepdata only applies to uninstall. */
+        setup::Options install;
+        std::wstring message;
+        QVERIFY(!setup::parseOptions({L"/keepdata=no"}, install, message));
+        QVERIFY(!message.empty());
+        setup::Options repair;
+        QVERIFY(!setup::parseOptions({L"/repair", L"/keepdata=no"}, repair, message));
+        QVERIFY(!message.empty());
+    }
+
+    void uninstallKeepDataValuesAndDuplicates() {
+        for (const auto* value : {L"", L"=", L"=true", L"=1", L"=maybe"}) {
+            setup::Options options;
+            std::wstring error;
+            QVERIFY(!setup::parseOptions({L"/uninstall", std::wstring(L"/keepdata") + value}, options, error));
+            QVERIFY(!error.empty());
+        }
+        setup::Options options;
+        std::wstring error;
+        QVERIFY(!setup::parseOptions({L"/uninstall", L"/keepdata=yes", L"/KEEPDATA=no"}, options, error));
+        QVERIFY(error.find(L"Duplicate") != std::wstring::npos);
+    }
+
+    void installStillRequiresLicenseInSilentMode() {
+        // The relaxed rule must be scoped to removal modes only.
+        setup::Options options;
+        std::wstring error;
+        QVERIFY(!setup::parseOptions({L"/silent"}, options, error));
+        QVERIFY(error.find(L"/acceptlicense") != std::wstring::npos);
+        QVERIFY(setup::parseOptions({L"/silent", L"/acceptlicense"}, options, error));
+    }
+
+    void licenseAndSilentLaunch() {        const std::vector<std::vector<std::wstring>> valid = {
             {L"/acceptlicense", L"/silent", L"/launch=yes"},
             {L"/launch=yes", L"/silent", L"/acceptlicense"},
             {L"/silent", L"/launch=no", L"/acceptlicense"},

@@ -59,8 +59,12 @@ Add a regression test alongside any behavior fix.
 Installer regressions include command-line/license handling, recovery-manifest
 merging, allow-ACE screening, and interrupted file placement under `QTemporaryDir`.
 They never run setup or access real services, adapters or the registry. Native
-wizard visual/accessibility checks, actual elevated installation/upgrade/uninstall
-and driver loading still require a disposable Windows VM.
+wizard visual/accessibility checks, actual elevated installation/upgrade,
+`/uninstall` (GUI and silent, with both keep-data choices), `/repair`, DNS restoration
+and driver-store cleanup still require a disposable Windows VM. Forwarding-proxy
+framing and settings tests are offline; SOCKS5/SOCKS4a/HTTP CONNECT interoperability,
+authentication, rule enforcement, upstream tunnels and shutdown with live clients
+require separate manual verification. Do not add socket listeners to the offline suite.
 The release workflow runs the offline suites before building distribution packages.
 
 Run the live protocol verification suite against public resolvers before

@@ -546,21 +546,35 @@ void SystemDns::restore() {
     active_ = false;
 }
 
-void SystemDns::restoreLeftover() {
+bool SystemDns::clearLeakPreventionPolicy() {
+    HKEY key = nullptr;
+    const LSTATUS opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+        L"Software\\Policies\\Microsoft\\Windows NT\\DNSClient", 0, KEY_SET_VALUE, &key);
+    if (opened == ERROR_FILE_NOT_FOUND) return true;
+    if (opened != ERROR_SUCCESS) return false;
+    const LSTATUS removed = RegDeleteValueW(key, L"DisableSmartNameResolution");
+    RegCloseKey(key);
+    return removed == ERROR_SUCCESS || removed == ERROR_FILE_NOT_FOUND;
+}
+
+bool SystemDns::restoreLeftover() {
     std::vector<Saved> saved;
     if (!readBackup(saved)) {
         logger_.log(Logger::Level::Error,
                     "The DNS backup " + narrow(backupPath_.wstring()) +
                         " cannot be read. It was kept so the saved values are not lost. "
                         "Adapters may still use 127.0.0.1.");
-        return;
+        return false;
     }
-    if (saved.empty()) {
+    if (!saved.empty()) {
+        logger_.log(Logger::Level::Info, "Restoring adapter DNS settings left by a previous run");
+        if (!restoreFrom(saved)) return false;
+    } else {
         removeBackup();
-        return;
     }
-    logger_.log(Logger::Level::Info, "Restoring adapter DNS settings left by a previous run");
-    restoreFrom(saved);
+    std::error_code error;
+    const bool remains = std::filesystem::exists(backupPath_, error);
+    return !error && !remains;
 }
 
 // Restores each entry. Entries that could not be restored are written back to the backup file,

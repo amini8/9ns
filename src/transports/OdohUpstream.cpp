@@ -19,6 +19,7 @@
 
 #include "core/DnsMessage.h"
 #include "core/Text.h"
+#include "transports/ProxyTunnel.h"
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -134,9 +135,16 @@ std::string urlEncode(const std::string& value) {
 // Sends one HTTPS request and reads the reply body.
 bool httpRequest(const Url& url, const std::wstring& method, const std::string& contentType,
                  const std::vector<uint8_t>* body, const std::vector<std::string>& bootstrapIps,
-                 DWORD& status, std::vector<uint8_t>& reply, std::string& error) {
-    WinHttpHandle session(WinHttpOpen(L"9NS/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
-                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+                 const UpstreamProxyConfig& proxy, DWORD& status, std::vector<uint8_t>& reply,
+                 std::string& error) {
+    std::wstring proxyName;
+    const bool proxied = winHttpProxyName(proxy, 8080, proxyName, error);
+    // An enabled proxy WinHTTP cannot use must fail, never fall back to a direct connection.
+    if (proxy.enabled && !proxied) return false;
+    WinHttpHandle session(WinHttpOpen(L"9NS/1.0",
+                                      proxied ? WINHTTP_ACCESS_TYPE_NAMED_PROXY : WINHTTP_ACCESS_TYPE_NO_PROXY,
+                                      proxied ? proxyName.c_str() : WINHTTP_NO_PROXY_NAME,
+                                      WINHTTP_NO_PROXY_BYPASS, 0));
     if (!session.get()) {
         error = "cannot open HTTP session (error " + std::to_string(GetLastError()) + ")";
         return false;
@@ -151,7 +159,9 @@ bool httpRequest(const Url& url, const std::wstring& method, const std::string& 
     // literal, the previous behavior, where certificate verification fails
     // closed for hostname certificates. Verification is never relaxed.
     std::wstring bootstrapHost;
-    if (!bootstrapIps.empty()) {
+    // Behind a proxy WinHTTP resolves the proxy, not the ODoH host, so bootstrap pinning
+    // would conflict with the tunnel and is skipped.
+    if (!bootstrapIps.empty() && !proxied) {
         bootstrapHost = widen(bootstrapIps.front());
     }
     WinHttpHandle conn(WinHttpConnect(session.get(), url.host.c_str(), url.port, 0));
@@ -167,6 +177,7 @@ bool httpRequest(const Url& url, const std::wstring& method, const std::string& 
         error = "cannot open ODoH request (error " + std::to_string(GetLastError()) + ")";
         return false;
     }
+    if (proxied) applyWinHttpCredentials(request.get(), proxy);
     DWORD http2Flag = WINHTTP_PROTOCOL_FLAG_HTTP2;
     WinHttpSetOption(request.get(), WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL, &http2Flag, sizeof(http2Flag));
 
@@ -389,6 +400,8 @@ struct OdohUpstream::Impl {
     Url proxy;
     bool useProxy = false;
     std::vector<std::string> bootstrapIps;
+    // Copied from the owning Upstream once create() applies the configuration.
+    UpstreamProxyConfig upstreamProxy;
 
     // Serializes configuration refreshes so only one fetch runs at a time, as
     // before; the slot's own mutex guards only the snapshot swap.
@@ -421,6 +434,8 @@ OdohUpstream::OdohUpstream(std::string name, const std::string& targetUrl, const
 
 OdohUpstream::~OdohUpstream() = default;
 
+void OdohUpstream::onUpstreamProxyChanged() { impl_->upstreamProxy = upstreamProxy(); }
+
 std::shared_ptr<const OdohConfigSnapshot> OdohUpstream::Impl::loadConfig(std::string& error) {
     Url configUrl = target;
     configUrl.path = widen(kConfigPath);
@@ -428,7 +443,7 @@ std::shared_ptr<const OdohConfigSnapshot> OdohUpstream::Impl::loadConfig(std::st
 
     DWORD status = 0;
     std::vector<uint8_t> body;
-    if (!httpRequest(configUrl, L"GET", kMediaType, nullptr, bootstrapIps, status, body, error)) {
+    if (!httpRequest(configUrl, L"GET", kMediaType, nullptr, bootstrapIps, upstreamProxy, status, body, error)) {
         return nullptr;
     }
     if (status != 200) {
@@ -589,7 +604,8 @@ bool OdohUpstream::exchange(const dns::Bytes& query, dns::Bytes& response, std::
 
     DWORD status = 0;
     std::vector<uint8_t> body;
-    if (!httpRequest(endpoint, L"POST", kMediaType, &message, impl_->bootstrapIps, status, body, error)) {
+    if (!httpRequest(endpoint, L"POST", kMediaType, &message, impl_->bootstrapIps, impl_->upstreamProxy,
+                     status, body, error)) {
         OSSL_HPKE_CTX_free(hpke);
         return false;
     }

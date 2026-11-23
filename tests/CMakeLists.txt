@@ -7,15 +7,26 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
 # --- Config: parsing, validation, round-trip and legacy NextDNS rejection ---
 add_executable(test_config test_config.cpp
     ${CMAKE_SOURCE_DIR}/src/core/Config.cpp
+    ${CMAKE_SOURCE_DIR}/src/transports/Stamp.cpp
 )
 target_include_directories(test_config PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_definitions(test_config PRIVATE NS9_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(test_config PRIVATE Qt6::Test nlohmann_json::nlohmann_json)
 add_test(NAME test_config COMMAND test_config)
 
+# --- ProxyProtocol: SOCKS5/SOCKS4a/HTTP CONNECT framing, pure and socket-free ---
+add_executable(test_proxyprotocol test_proxyprotocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/ProxyProtocol.cpp
+)
+target_include_directories(test_proxyprotocol PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_proxyprotocol PRIVATE Qt6::Test)
+add_test(NAME test_proxyprotocol COMMAND test_proxyprotocol)
+set_tests_properties(test_proxyprotocol PROPERTIES TIMEOUT 30)
+
 # --- ConfigSession: draft/saved/running semantics, dirty tracking ---
 add_executable(test_configsession test_configsession.cpp
     ${CMAKE_SOURCE_DIR}/src/core/Config.cpp
+    ${CMAKE_SOURCE_DIR}/src/transports/Stamp.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ConfigSession.cpp
 )
 target_include_directories(test_configsession PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -25,6 +36,7 @@ add_test(NAME test_configsession COMMAND test_configsession)
 # --- ResolverJobs: dispatcher lifetime, cancellation, result routing ---
 add_executable(test_jobs test_jobs.cpp
     ${CMAKE_SOURCE_DIR}/src/core/Config.cpp
+    ${CMAKE_SOURCE_DIR}/src/transports/Stamp.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ResolverJobs.cpp
 )
 target_include_directories(test_jobs PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -34,6 +46,7 @@ add_test(NAME test_jobs COMMAND test_jobs)
 # --- QueryLogModel: timestamps, eviction, filters, snapshots ---
 add_executable(test_querylog test_querylog.cpp
     ${CMAKE_SOURCE_DIR}/src/core/Config.cpp
+    ${CMAKE_SOURCE_DIR}/src/transports/Stamp.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/QueryLogModel.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/QueryLogFilterProxyModel.cpp
 )
@@ -44,6 +57,7 @@ add_test(NAME test_querylog COMMAND test_querylog)
 # --- Dialog ordering and candidate validation (pool/rule/server round-trip) ---
 add_executable(test_dialogs test_dialogs.cpp
     ${CMAKE_SOURCE_DIR}/src/core/Config.cpp
+    ${CMAKE_SOURCE_DIR}/src/transports/Stamp.cpp
 )
 target_include_directories(test_dialogs PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_dialogs PRIVATE Qt6::Test nlohmann_json::nlohmann_json)
@@ -173,6 +187,8 @@ set_tests_properties(test_dnstrust PROPERTIES TIMEOUT 30)
 add_executable(test_odoh test_odoh.cpp
     ${CMAKE_SOURCE_DIR}/src/core/DnsMessage.cpp
     ${CMAKE_SOURCE_DIR}/src/transports/OdohUpstream.cpp
+    ${CMAKE_SOURCE_DIR}/src/transports/ProxyTunnel.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/ProxyProtocol.cpp
 )
 target_include_directories(test_odoh PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_definitions(test_odoh PRIVATE UNICODE _UNICODE NOMINMAX)

@@ -46,9 +46,10 @@ constexpr int kWndHeight = 560;
 constexpr UINT kStatusMessage = WM_APP + 1;
 constexpr UINT kCompleteMessage = WM_APP + 2;
 constexpr wchar_t kUninstallKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\9NS";
-enum class Page { Welcome, License, Mode, Destination, Components, Review, Progress, Finish };
+enum class Page { Welcome, License, Mode, Destination, Components, Review, Remove, Progress, Finish };
+constexpr int kPageCount = 9;
 Page g_page = Page::Welcome;
-std::vector<HWND> g_pages[8];
+std::vector<HWND> g_pages[kPageCount];
 setup::Options g_options;
 std::wstring g_registeredDir;
 std::wstring g_logPath;
@@ -62,6 +63,8 @@ struct Completion { int code; std::wstring text; };
 void consoleOutput(const std::wstring& text);
 bool createUninstallFiles(const std::wstring& destDir, protected_paths::InstallManifest& manifest,
                           std::wstring& errorOut);
+Completion performUninstall();
+Completion performRepair();
 
 HWND g_hWnd = nullptr;
 HWND g_hEditDest = nullptr;
@@ -83,8 +86,24 @@ HWND g_hCustom = nullptr;
 HWND g_hReview = nullptr;
 HWND g_hDetails = nullptr;
 HWND g_hFinish = nullptr;
+HWND g_hChkRemoveData = nullptr;
+HWND g_hDetected = nullptr;
 HFONT g_hFontNormal = nullptr;
 HFONT g_hFontTitle = nullptr;
+
+// Detected machine state shown on the Remove page and used to build the teardown plan.
+struct DetectedState {
+    bool guiRunning = false;
+    bool serviceExists = false;
+    bool serviceRunning = false;
+    bool driverServiceExists = false;
+    bool driverRunning = false;
+    bool driverStorePackage = false;
+    bool driverBinary = false;
+    bool dataDirPresent = false;
+    bool watchDogRunning = false;
+};
+DetectedState g_detected;
 
 bool g_installing = false;
 
@@ -616,7 +635,8 @@ bool planStagedTree(const std::wstring& src, const std::wstring& relative, const
         return false;
     }
     if (_wcsicmp(relative.c_str(), L"install-manifest.txt") == 0 ||
-        _wcsicmp(relative.c_str(), L"uninstall.bat") == 0) {
+        _wcsicmp(relative.c_str(), L"uninstall.bat") == 0 ||
+        _wcsicmp(relative.c_str(), L"uninstall.exe") == 0) {
         error = L"The package contains a reserved setup file: " + relative;
         return false;
     }
@@ -717,9 +737,8 @@ bool registerUninstaller(const std::wstring& destDir) {
         std::wstring ver = L"1.0.0";
         std::wstring pub = L"9NS Team";
         std::wstring icon = destDir + L"\\9ns.exe,0";
-        // Absolute cmd.exe from System32; the script path is data, not source.
-        const std::wstring cmdExe = systemHelperPath(L"cmd.exe");
-        std::wstring uninstCmd = protected_paths::buildUninstallString(cmdExe, destDir + L"\\uninstall.bat");
+        const std::wstring uninstCmd = protected_paths::buildNativeUninstallString(destDir + L"\\uninstall.exe");
+        const std::wstring quietCmd = protected_paths::buildNativeUninstallString(destDir + L"\\uninstall.exe", true);
 
         bool ok = true;
         auto setString = [&](const wchar_t* key, const std::wstring& value) {
@@ -732,9 +751,12 @@ bool registerUninstaller(const std::wstring& destDir) {
         setString(L"DisplayIcon", icon);
         setString(L"InstallLocation", destDir);
         setString(L"UninstallString", uninstCmd);
+        setString(L"QuietUninstallString", quietCmd);
 
         DWORD sizeKb = 120 * 1024;
         if (RegSetValueExW(hKey, L"EstimatedSize", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&sizeKb), sizeof(sizeKb)) != ERROR_SUCCESS) ok = false;
+        // Add/Remove Programs offers Repair only for MSI products, so advertising one here
+        // would be a dead button. Repair is a documented command line on uninstall.exe.
         const DWORD noModify = 1;
         if (RegSetValueExW(hKey, L"NoModify", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&noModify), sizeof(noModify)) != ERROR_SUCCESS) ok = false;
         if (RegSetValueExW(hKey, L"NoRepair", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&noModify), sizeof(noModify)) != ERROR_SUCCESS) ok = false;
@@ -751,9 +773,16 @@ bool registerUninstaller(const std::wstring& destDir) {
 // against the install root before anything is written.
 bool createUninstallFiles(const std::wstring& destDir, protected_paths::InstallManifest& manifest,
                           std::wstring& errorOut) {
-    if (std::none_of(manifest.files.begin(), manifest.files.end(), [](const std::wstring& file) {
-            return _wcsicmp(file.c_str(), L"install-manifest.txt") == 0;
-        })) manifest.files.push_back(L"install-manifest.txt");
+    for (const auto* recovery : {L"install-manifest.txt", L"uninstall.exe", L"uninstall.bat"}) {
+        if (std::none_of(manifest.files.begin(), manifest.files.end(), [&](const std::wstring& file) {
+                return _wcsicmp(file.c_str(), recovery) == 0;
+            })) manifest.files.push_back(recovery);
+    }
+    wchar_t module[32768] = {};
+    const DWORD moduleLength = GetModuleFileNameW(nullptr, module, 32768);
+    if (!moduleLength || moduleLength >= 32768) { errorOut = L"Cannot locate the running installer."; return false; }
+    const std::wstring nativeUninstaller = destDir + L"\\uninstall.exe";
+    const bool runningUninstaller = protected_paths::normalizePath(module) == protected_paths::normalizePath(nativeUninstaller);
     protected_paths::DeletionPlan plan;
     const protected_paths::PolicyResult check = protected_paths::planManifestDeletions(manifest, destDir, plan);
     if (!check.ok) {
@@ -770,6 +799,7 @@ bool createUninstallFiles(const std::wstring& destDir, protected_paths::InstallM
     if (!randomHex(random, 16)) { errorOut = L"Cannot create atomic recovery filenames."; return false; }
     const std::wstring tempManifest = destDir + L"\\manifest-" + widen(random) + L".tmp";
     const std::wstring tempScript = destDir + L"\\uninstall-" + widen(random) + L".tmp";
+    const std::wstring tempNative = destDir + L"\\native-" + widen(random) + L".tmp";
     auto stageFile = [&](const std::wstring& path, const std::string& bytes) {
         HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                   FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
@@ -785,13 +815,20 @@ bool createUninstallFiles(const std::wstring& destDir, protected_paths::InstallM
     if (!stageFile(tempScript, scriptBytes)) {
         DeleteFileW(tempManifest.c_str()); errorOut = L"Cannot stage the uninstall script."; return false;
     }
+    if (!runningUninstaller && (!CopyFileW(module, tempNative.c_str(), TRUE) || !securePayloadPath(tempNative, false, errorOut))) {
+        DeleteFileW(tempManifest.c_str()); DeleteFileW(tempScript.c_str()); DeleteFileW(tempNative.c_str());
+        errorOut = L"Cannot stage the native uninstaller."; return false;
+    }
     const bool manifestWritten = MoveFileExW(tempManifest.c_str(), (destDir + L"\\install-manifest.txt").c_str(),
                                              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
     const bool scriptWritten = manifestWritten && MoveFileExW(tempScript.c_str(), (destDir + L"\\uninstall.bat").c_str(),
                                                               MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    const bool nativeWritten = scriptWritten && (runningUninstaller || MoveFileExW(tempNative.c_str(), nativeUninstaller.c_str(),
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH));
     DeleteFileW(tempManifest.c_str());
     DeleteFileW(tempScript.c_str());
-    if (!scriptWritten) { errorOut = L"Cannot commit the recovery manifest and uninstaller. No payload files were replaced."; return false; }
+    DeleteFileW(tempNative.c_str());
+    if (!nativeWritten) { errorOut = L"Cannot commit the recovery manifest and uninstaller. No payload files were replaced."; return false; }
     return true;
 }
 
@@ -825,7 +862,10 @@ bool openLog(std::wstring& error) {
             error = L"Cannot create a setup log in the temporary folder.";
             return false;
         }
-        g_logPath = std::wstring(temp) + L"9NS-Setup-" + widen(random) + L".log";
+        const wchar_t* prefix = g_options.mode == setup::Mode::Uninstall ? L"9NS-Uninstall-"
+                               : g_options.mode == setup::Mode::Repair ? L"9NS-Repair-"
+                               : L"9NS-Setup-";
+        g_logPath = std::wstring(temp) + prefix + widen(random) + L".log";
     }
     const auto check = protected_paths::validateLocalPath(g_logPath);
     if (!check.ok) { error = widen(check.error); return false; }
@@ -906,6 +946,304 @@ bool serviceIsStopped(const wchar_t* name, std::wstring& error) {
         return false;
     }
     return true;
+}
+
+bool maintenancePreflight(protected_paths::InstallManifest& previous, std::wstring& error) {
+    if (!IsUserAnAdmin()) { error = L"Run setup as Administrator."; return false; }
+    const auto check = protected_paths::validateInstallDestination(g_options.destination);
+    if (!check.ok) { error = widen(check.error); return false; }
+    if (!g_registeredDir.empty() && protected_paths::normalizePath(g_registeredDir) != protected_paths::normalizePath(g_options.destination)) {
+        error = L"The requested folder does not match the registered installation."; return false;
+    }
+    if (isReparsePoint(g_options.destination) || !PathIsDirectoryW(g_options.destination.c_str()) ||
+        !parentChainIsProtected(g_options.destination + L"\\maintenance-check", error)) {
+        if (error.empty()) error = L"The installation directory is missing or untrusted.";
+        return false;
+    }
+    if (!validateExtractedTree(g_options.destination, error) || !readPreviousManifest(g_options.destination, previous, error)) return false;
+    protected_paths::DeletionPlan plan;
+    const auto result = protected_paths::planTeardown(previous, g_options.destination, plan);
+    if (!result.ok) { error = widen(result.error); return false; }
+    return true;
+}
+
+bool stopOwnedService(const wchar_t* name, const std::wstring& expectedExe, bool remove, std::wstring& error) {
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!manager) { error = L"Cannot open Service Control Manager."; return false; }
+    SC_HANDLE svc = OpenServiceW(manager, name, SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS | SERVICE_STOP | (remove ? DELETE : 0));
+    const DWORD opened = GetLastError();
+    CloseServiceHandle(manager);
+    if (!svc) {
+        if (opened == ERROR_SERVICE_DOES_NOT_EXIST) return true;
+        error = L"Cannot open service " + std::wstring(name) + L": " + std::to_wstring(opened); return false;
+    }
+    DWORD needed = 0;
+    QueryServiceConfigW(svc, nullptr, 0, &needed);
+    std::vector<BYTE> bytes(needed);
+    bool owned = needed && QueryServiceConfigW(svc, reinterpret_cast<QUERY_SERVICE_CONFIGW*>(bytes.data()), needed, &needed);
+    if (owned) {
+        const auto* config = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(bytes.data());
+        std::wstring command = config->lpBinaryPathName;
+        wchar_t expanded[32768] = {};
+        const DWORD length = ExpandEnvironmentStringsW(command.c_str(), expanded, 32768);
+        if (length && length <= 32768) command = expanded;
+        if (command.compare(0, 12, L"\\SystemRoot\\") == 0) {
+            wchar_t windows[MAX_PATH] = {};
+            if (GetWindowsDirectoryW(windows, MAX_PATH)) command = std::wstring(windows) + command.substr(11);
+        }
+        if (command.compare(0, 4, L"\\??\\") == 0) command.erase(0, 4);
+        int count = 0;
+        LPWSTR* args = CommandLineToArgvW(command.c_str(), &count);
+        owned = args && count > 0 && protected_paths::normalizePath(args[0]) == protected_paths::normalizePath(expectedExe);
+        if (args) LocalFree(args);
+    }
+    if (!owned) { CloseServiceHandle(svc); error = L"Service binary identity does not match 9NS: " + std::wstring(name); return false; }
+    const ULONGLONG deadline = GetTickCount64() + 60000;
+    bool stopped = false;
+    do {
+        SERVICE_STATUS_PROCESS status{};
+        if (!QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, reinterpret_cast<BYTE*>(&status), sizeof(status), &needed)) break;
+        if (status.dwCurrentState == SERVICE_STOPPED) { stopped = true; break; }
+        if (status.dwCurrentState != SERVICE_STOP_PENDING) {
+            SERVICE_STATUS ignored{};
+            if (!ControlService(svc, SERVICE_CONTROL_STOP, &ignored) && GetLastError() != ERROR_SERVICE_NOT_ACTIVE) break;
+        }
+        Sleep(200);
+    } while (GetTickCount64() < deadline);
+    const bool ok = stopped && (!remove || DeleteService(svc));
+    CloseServiceHandle(svc);
+    if (!ok) error = L"Service could not be stopped/deleted: " + std::wstring(name) + L". No payload files were removed.";
+    return ok;
+}
+
+struct AppProcesses {
+    std::vector<std::pair<DWORD, HANDLE>> entries;
+    ~AppProcesses() { for (const auto& entry : entries) CloseHandle(entry.second); }
+};
+
+bool findInstalledProcesses(AppProcesses& found, std::wstring& error) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) { error = L"Cannot enumerate application processes."; return false; }
+    PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry);
+    bool ok = Process32FirstW(snapshot, &entry) != FALSE;
+    if (ok) do {
+        if (_wcsicmp(entry.szExeFile, L"9ns.exe") != 0) continue;
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, entry.th32ProcessID);
+        if (!process) {
+            if (GetLastError() == ERROR_INVALID_PARAMETER) continue;
+            ok = false; break;
+        }
+        wchar_t image[32768] = {}; DWORD length = 32768;
+        if (!QueryFullProcessImageNameW(process, 0, image, &length)) { CloseHandle(process); ok = false; break; }
+        if (protected_paths::normalizePath(image) == protected_paths::normalizePath(g_options.destination + L"\\9ns.exe"))
+            found.entries.emplace_back(entry.th32ProcessID, process);
+        else CloseHandle(process);
+    } while (Process32NextW(snapshot, &entry));
+    if (ok && GetLastError() != ERROR_NO_MORE_FILES) ok = false;
+    CloseHandle(snapshot);
+    if (!ok) error = L"Cannot verify a running 9NS process image. No process was terminated.";
+    return ok;
+}
+
+BOOL CALLBACK requestAppShutdown(HWND window, LPARAM data) {
+    const auto* processes = reinterpret_cast<const AppProcesses*>(data);
+    DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
+    for (const auto& entry : processes->entries) {
+        if (entry.first == pid && WaitForSingleObject(entry.second, 0) == WAIT_TIMEOUT) {
+            const UINT message = RegisterWindowMessageW(L"9NS.MaintenanceShutdown");
+            if (message) PostMessageW(window, message, 0, 0);
+            PostMessageW(window, WM_CLOSE, 0, 0);
+            break;
+        }
+    }
+    return TRUE;
+}
+
+bool quiesceInstallation(bool removing, std::wstring& error) {
+    AppProcesses processes;
+    if (!findInstalledProcesses(processes, error)) return false;
+    report(10, L"Requesting graceful GUI shutdown and stopping the background service...");
+    EnumWindows(requestAppShutdown, reinterpret_cast<LPARAM>(&processes));
+    if (!stopOwnedService(service::kServiceName, g_options.destination + L"\\9ns.exe", removing, error)) return false;
+    report(15, L"Waiting for the application and its DNS watchdog to exit...");
+    const ULONGLONG deadline = GetTickCount64() + 60000;
+    for (;;) {
+        AppProcesses remaining;
+        if (!findInstalledProcesses(remaining, error)) return false;
+        if (remaining.entries.empty()) break;
+        if (GetTickCount64() >= deadline) {
+            error = L"9NS or its watchdog is still running. Exit 9NS from its tray menu and retry. Nothing was force-terminated.";
+            return false;
+        }
+        Sleep(200);
+    }
+    report(20, L"Restoring saved adapter DNS and clearing the leak-prevention policy...");
+    if (!runHidden(g_options.destination + L"\\9ns.exe", L"--restore-dns --quiet")) {
+        error = L"DNS restoration failed. Installation files and recovery data were retained. See the service log."; return false;
+    }
+    return true;
+}
+
+// Runs an installed command and waits for it. Unlike runHidden it reports the exit code,
+// so a non-zero --restore-dns result can be logged without aborting an uninstall.
+bool runAndWait(const std::wstring& application, const std::wstring& arguments, DWORD timeoutMs,
+                DWORD& exitCode, std::wstring& error) {
+    const std::wstring cmd =
+        protected_paths::quoteCommandLineArgument(application) + (arguments.empty() ? L"" : L" " + arguments);
+    std::vector<wchar_t> buffer(cmd.begin(), cmd.end());
+    buffer.push_back(L'\0');
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, nullptr, &si, &pi)) {
+        error = L"Cannot start " + application + L" (Windows error " + std::to_wstring(GetLastError()) + L").";
+        return false;
+    }
+    const DWORD waited = WaitForSingleObject(pi.hProcess, timeoutMs);
+    const bool finished = waited == WAIT_OBJECT_0;
+    if (finished) GetExitCodeProcess(pi.hProcess, &exitCode);
+    if (!finished) TerminateProcess(pi.hProcess, 1);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (!finished) { error = application + L" did not finish in time."; return false; }
+    return true;
+}
+
+bool serviceStatus(const wchar_t* name, bool& exists, bool& running) {
+    exists = false;
+    running = false;
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!scm) return false;
+    SC_HANDLE svc = OpenServiceW(scm, name, SERVICE_QUERY_STATUS);
+    CloseServiceHandle(scm);
+    if (!svc) return GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST;
+    exists = true;
+    SERVICE_STATUS_PROCESS status{};
+    DWORD needed = 0;
+    if (QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, reinterpret_cast<BYTE*>(&status), sizeof(status), &needed))
+        running = status.dwCurrentState == SERVICE_RUNNING || status.dwCurrentState == SERVICE_START_PENDING;
+    CloseServiceHandle(svc);
+    return true;
+}
+
+// Stops and deletes a service by name. Used for the kernel driver, whose binary path is
+// System32\drivers rather than the install folder, so the install-tree ownership check in
+// stopOwnedService does not apply.
+bool removeServiceByName(const wchar_t* name, std::wstring& error) {
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!scm) { error = L"Cannot open the Service Control Manager."; return false; }
+    SC_HANDLE svc = OpenServiceW(scm, name, SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE);
+    const DWORD opened = GetLastError();
+    CloseServiceHandle(scm);
+    if (!svc) {
+        if (opened == ERROR_SERVICE_DOES_NOT_EXIST || opened == ERROR_SERVICE_MARKED_FOR_DELETE) return true;
+        error = L"Cannot open service " + std::wstring(name) + L" (Windows error " + std::to_wstring(opened) + L").";
+        return false;
+    }
+    SERVICE_STATUS status{};
+    const ULONGLONG deadline = GetTickCount64() + 15000;
+    if (ControlService(svc, SERVICE_CONTROL_STOP, &status) || GetLastError() == ERROR_SERVICE_NOT_ACTIVE) {
+        SERVICE_STATUS_PROCESS current{};
+        DWORD needed = 0;
+        do {
+            if (!QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, reinterpret_cast<BYTE*>(&current),
+                                      sizeof(current), &needed))
+                break;
+            if (current.dwCurrentState == SERVICE_STOPPED) break;
+            Sleep(200);
+        } while (GetTickCount64() < deadline);
+    }
+    const bool ok = DeleteService(svc) || GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE;
+    const DWORD code = GetLastError();
+    CloseServiceHandle(svc);
+    // DeleteService leaves the service in delete-pending until its handles close, so a
+    // failure here is only a warning: the next boot completes the removal.
+    if (!ok) error = L"Service " + std::wstring(name) + L" could not be deleted (Windows error " +
+                     std::to_wstring(code) + L").";
+    return ok;
+}
+
+// Locates the published oemXX.inf for NineNsFlt by reading its Model/Provider registry
+// values, so an unrelated driver package in the store is never removed.
+std::wstring publishedDriverInf() {
+    wchar_t inf[MAX_PATH] = {};
+    if (GetWindowsDirectoryW(inf, MAX_PATH) == 0) return {};
+    const std::wstring infDir = std::wstring(inf) + L"\\INF";
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileW((infDir + L"\\oem*.inf").c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) return {};
+    std::wstring found;
+    do {
+        const std::wstring candidate = infDir + L"\\" + data.cFileName;
+        // The INF text is authoritative: only the package that names NineNsFlt is removed.
+        HANDLE file = CreateFileW(candidate.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                  FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (file == INVALID_HANDLE_VALUE) continue;
+        LARGE_INTEGER length{};
+        std::string text;
+        if (GetFileSizeEx(file, &length) && length.QuadPart > 0 && length.QuadPart <= 1024 * 1024) {
+            text.resize(static_cast<size_t>(length.QuadPart));
+            DWORD read = 0;
+            if (!ReadFile(file, text.data(), static_cast<DWORD>(text.size()), &read, nullptr)) text.clear();
+            else text.resize(read);
+        }
+        CloseHandle(file);
+        if (text.find("NineNsFlt") != std::string::npos) { found = data.cFileName; break; }
+    } while (FindNextFileW(find, &data));
+    FindClose(find);
+    return found;
+}
+
+// Fills the detected state. Never throws: an unreadable piece of state is simply false.
+void detectState(DetectedState& state) {
+    state = DetectedState{};
+    AppProcesses processes;
+    std::wstring ignored;
+    if (findInstalledProcesses(processes, ignored)) state.guiRunning = !processes.entries.empty();
+    if (!serviceStatus(service::kServiceName, state.serviceExists, state.serviceRunning)) {
+        state.serviceExists = false;
+        state.serviceRunning = false;
+    }
+    if (!serviceStatus(L"NineNsFlt", state.driverServiceExists, state.driverRunning)) {
+        state.driverServiceExists = false;
+        state.driverRunning = false;
+    }
+    const std::wstring inf = publishedDriverInf();
+    state.driverStorePackage = !inf.empty();
+    wchar_t windows[MAX_PATH] = {};
+    if (GetWindowsDirectoryW(windows, MAX_PATH)) {
+        const std::wstring driver = std::wstring(windows) + L"\\System32\\drivers\\NineNsFlt.sys";
+        state.driverBinary = PathFileExistsW(driver.c_str()) != FALSE;
+    }
+    std::wstring data;
+    wchar_t common[MAX_PATH] = {};
+    if (SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, common) == S_OK) {
+        data = std::wstring(common) + L"\\9NS";
+        state.dataDirPresent = PathIsDirectoryW(data.c_str()) != FALSE;
+    }
+    // A watchdog is a child of the GUI, so a live GUI already implies one may exist.
+    state.watchDogRunning = state.guiRunning;
+}
+
+std::wstring detectedSummary(const DetectedState& state) {
+    auto yes = [](bool value) { return value ? L"Yes" : L"No"; };
+    auto detail = [](bool exists, bool running) {
+        if (!exists) return std::wstring();
+        return running ? std::wstring(L" (running)") : std::wstring(L" (stopped)");
+    };
+    std::wstring text = L"Detected state:\r\n\r\n";
+    text += std::wstring(L"9NS application running: ") + yes(state.guiRunning) + L"\r\n";
+    text += std::wstring(L"Background service registered: ") + yes(state.serviceExists) +
+            detail(state.serviceExists, state.serviceRunning) + L"\r\n";
+    text += std::wstring(L"DNS guard driver service: ") + yes(state.driverServiceExists) +
+            detail(state.driverServiceExists, state.driverRunning) + L"\r\n";
+    text += std::wstring(L"Driver package in the Windows driver store: ") + yes(state.driverStorePackage) + L"\r\n";
+    text += std::wstring(L"Driver binary in System32\\drivers: ") + yes(state.driverBinary) + L"\r\n";
+    text += std::wstring(L"Settings in %ProgramData%\\9NS: ") + yes(state.dataDirPresent) + L"\r\n\r\n";
+    text += L"Adapter DNS settings are restored before any file is removed.\r\n"
+            L"Only files listed in the installation manifest are deleted; unknown files survive.";
+    return text;
 }
 
 bool preflight(protected_paths::InstallManifest& previous, std::wstring& error) {
@@ -1056,11 +1394,299 @@ Completion performInstall() {
                L"A newly registered background service starts on the next Windows boot; setup does not start it now."};
 }
 
+// Walks the ordered teardown plan. Fatal failures stop before files are touched;
+// integration problems accumulate as warnings, matching performInstall.
+Completion performUninstall() {
+    std::wstring error;
+    if (!openLog(error)) return {1, error};
+    report(5, L"Checking the registered installation...");
+    const std::wstring& dest = g_options.destination;
+    if (g_registeredDir.empty()) {
+        error = L"9NS is not installed on this computer.";
+        report(0, error);
+        return {3, error};
+    }
+    if (!IsUserAnAdmin()) {
+        error = L"Run the uninstaller as Administrator.";
+        report(0, error);
+        return {3, error};
+    }
+    // Manifest-driven deletion is the only path that preserves unknown files, so an
+    // unreadable manifest is fatal rather than a reason to delete the whole tree.
+    protected_paths::InstallManifest manifest;
+    if (!readPreviousManifest(dest, manifest, error)) { report(0, error); return {3, error}; }
+
+    DetectedState detected;
+    detectState(detected);
+    logLine(L"Detected: gui=" + std::to_wstring(detected.guiRunning) +
+            L" service=" + std::to_wstring(detected.serviceExists) +
+            L" driver=" + std::to_wstring(detected.driverServiceExists) +
+            L" driverStore=" + std::to_wstring(detected.driverStorePackage) +
+            L" data=" + std::to_wstring(detected.dataDirPresent));
+
+    std::wstring warnings;
+    auto warn = [&](const std::wstring& message) { warnings += message + L"\r\n"; report(85, L"Warning: " + message); };
+
+    report(10, L"Closing 9NS and stopping the background service...");
+    AppProcesses processes;
+    if (!findInstalledProcesses(processes, error)) { report(10, error); return {1, error}; }
+    EnumWindows(requestAppShutdown, reinterpret_cast<LPARAM>(&processes));
+    // The GUI restores adapter DNS itself on a clean exit; the explicit step below covers
+    // the crash case, where the watchdog or a previous run left a backup behind.
+    {
+        std::wstring serviceError;
+        if (!stopOwnedService(service::kServiceName, dest + L"\\9ns.exe", true, serviceError) &&
+            serviceError.find(L"does not match") == std::wstring::npos)
+            warn(serviceError);
+    }
+    report(18, L"Waiting for 9NS and its DNS watchdog to exit...");
+    {
+        const ULONGLONG deadline = GetTickCount64() + 10000;
+        for (;;) {
+            AppProcesses remaining;
+            if (!findInstalledProcesses(remaining, error)) { warn(error); break; }
+            if (remaining.entries.empty()) break;
+            if (GetTickCount64() >= deadline) {
+                for (const auto& entry : remaining.entries) TerminateProcess(entry.second, 0);
+                Sleep(300);
+                break;
+            }
+            Sleep(200);
+        }
+    }
+    report(28, L"Restoring saved adapter DNS and clearing the leak-prevention policy...");
+    if (PathFileExistsW((dest + L"\\9ns.exe").c_str())) {
+        DWORD exitCode = 1;
+        std::wstring runError;
+        if (!runAndWait(dest + L"\\9ns.exe", L"--restore-dns --quiet", 30000, exitCode, runError) || exitCode != 0)
+            warn(L"Adapter DNS could not be restored automatically (" +
+                 (runError.empty() ? L"9ns.exe returned " + std::to_wstring(exitCode) : runError) +
+                 L"). Check each adapter's DNS servers and set them manually.");
+        else
+            logLine(L"Adapter DNS restored and the leak-prevention policy cleared.");
+    }
+
+    report(40, L"Removing the optional DNS guard driver...");
+    {
+        std::wstring driverError;
+        if (!removeServiceByName(L"NineNsFlt", driverError)) warn(driverError);
+        const std::wstring inf = publishedDriverInf();
+        if (!inf.empty()) {
+            if (!SetupUninstallOEMInfW(inf.c_str(), SUOI_FORCEDELETE, nullptr))
+                warn(L"The driver package " + inf + L" could not be removed from the Windows driver store.");
+        }
+        wchar_t windows[MAX_PATH] = {};
+        if (GetWindowsDirectoryW(windows, MAX_PATH)) {
+            const std::wstring binary = std::wstring(windows) + L"\\System32\\drivers\\NineNsFlt.sys";
+            if (PathFileExistsW(binary.c_str()) && !DeleteFileW(binary.c_str()))
+                warn(L"The driver binary " + binary + L" could not be deleted.");
+        }
+    }
+
+    report(50, L"Removing shortcuts...");
+    std::wstring exeMissing;
+    for (const int folderId : {CSIDL_COMMON_DESKTOPDIRECTORY, CSIDL_COMMON_PROGRAMS}) {
+        wchar_t folder[MAX_PATH] = {};
+        if (SHGetFolderPathW(nullptr, folderId, nullptr, 0, folder) != S_OK) continue;
+        const std::wstring link = std::wstring(folder) + L"\\9NS.lnk";
+        if (PathFileExistsW(link.c_str()) && !DeleteFileW(link.c_str()))
+            warn(folderId == CSIDL_COMMON_PROGRAMS ? L"The Start Menu shortcut could not be deleted."
+                                                  : L"The Desktop shortcut could not be deleted.");
+    }
+    // The per-user key is created by the MSI as a component KeyPath; ignore a missing key.
+    if (RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\9NS") != ERROR_SUCCESS &&
+        GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND)
+        warn(L"HKEY_CURRENT_USER\\Software\\9NS could not be removed.");
+
+    report(60, L"Removing installed files...");
+    protected_paths::DeletionPlan plan;
+    const auto planned = protected_paths::planTeardown(manifest, dest, plan);
+    if (!planned.ok) { report(60, widen(planned.error)); return {3, widen(planned.error)}; }
+    const std::wstring normalizedRoot = protected_paths::normalizePath(dest);
+    const std::wstring runningImage = dest + L"\\uninstall.exe";
+    bool fileFailure = false;
+    for (const std::wstring& file : plan.files) {
+        // planTeardown already drops the install-root config.json; this covers a nested one
+        // only if a future manifest ever lists it.
+        const std::wstring relative =
+            file.size() > normalizedRoot.size() + 1
+                ? std::wstring(file.begin() + static_cast<std::ptrdiff_t>(normalizedRoot.size() + 1), file.end())
+                : std::wstring();
+        if (setup::preserveExistingFile(relative)) continue;
+        // The running image is scheduled for deletion after the reboot instead.
+        if (protected_paths::normalizePath(file) == protected_paths::normalizePath(runningImage)) continue;
+        if (PathFileExistsW(file.c_str()) && !DeleteFileW(file.c_str())) {
+            fileFailure = true;
+            warn(L"Cannot delete " + file + L" (Windows error " + std::to_wstring(GetLastError()) + L").");
+        }
+    }
+    for (const std::wstring& directory : plan.directories) {
+        if (!RemoveDirectoryW(directory.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND &&
+            GetLastError() != ERROR_PATH_NOT_FOUND) {
+            warn(L"Cannot remove directory " + directory + L" (Windows error " +
+                 std::to_wstring(GetLastError()) + L"). Unknown files inside it were kept.");
+        }
+    }
+
+    bool dataPurged = false;
+    if (!g_options.keepData) {
+        report(72, L"Removing settings, logs and the DNS backup in %ProgramData%\\9NS...");
+        wchar_t common[MAX_PATH] = {};
+        std::wstring dataDir;
+        if (SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, common) == S_OK)
+            dataDir = std::wstring(common) + L"\\9NS";
+        if (!dataDir.empty() && PathIsDirectoryW(dataDir.c_str())) {
+            std::vector<std::wstring> names;
+            WIN32_FIND_DATAW entry{};
+            HANDLE find = FindFirstFileW((dataDir + L"\\*").c_str(), &entry);
+            if (find != INVALID_HANDLE_VALUE) {
+                do {
+                    if (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                    names.emplace_back(entry.cFileName);
+                } while (FindNextFileW(find, &entry));
+                FindClose(find);
+            }
+            protected_paths::DeletionPlan purge;
+            const auto purgePlan = protected_paths::planDataPurge(dataDir, common, names, purge);
+            if (!purgePlan.ok) warn(widen(purgePlan.error));
+            for (const std::wstring& file : purge.files)
+                if (PathFileExistsW(file.c_str()) && !DeleteFileW(file.c_str()))
+                    warn(L"Cannot delete " + file + L".");
+            if (RemoveDirectoryW(dataDir.c_str())) dataPurged = true;
+            else
+                warn(L"%ProgramData%\\9NS was kept because it still contains files 9NS did not create.");
+        }
+    }
+
+    // Never orphan files with no uninstall entry left to retry with.
+    bool arpRemoved = false;
+    if (!fileFailure) {
+        report(80, L"Removing the Add/Remove Programs entry...");
+        if (RegDeleteTreeW(HKEY_LOCAL_MACHINE, kUninstallKey) == ERROR_SUCCESS) arpRemoved = true;
+        else if (GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND)
+            warn(L"The Add/Remove Programs entry could not be removed.");
+    } else {
+        warn(L"The Add/Remove Programs entry was kept so you can retry the uninstall.");
+    }
+
+    // The running image cannot delete itself; schedule it for the next restart.
+    {
+        wchar_t module[32768] = {};
+        const DWORD length = GetModuleFileNameW(nullptr, module, 32768);
+        if (length && length < 32768) {
+            const std::wstring running = module;
+            if (PathFileExistsW(running.c_str()) &&
+                protected_paths::normalizePath(running) != protected_paths::normalizePath(dest + L"\\9ns.exe")) {
+                if (!MoveFileExW(running.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT))
+                    warn(L"This uninstaller could not be scheduled for deletion: " + running);
+            }
+        }
+    }
+
+    const std::wstring kept = g_options.keepData
+        ? L"Your settings, logs and DNS backup in %ProgramData%\\9NS were kept."
+        : (dataPurged ? L"Your settings in %ProgramData%\\9NS were removed."
+                      : L"%ProgramData%\\9NS was kept because it contains files 9NS did not create.");
+    const std::wstring intro = warnings.empty()
+        ? L"9NS was removed from this computer."
+        : L"9NS was partially removed. Review the following before retrying:";
+    if (!warnings.empty()) {
+        report(100, intro);
+        return {4, intro + L"\r\n\r\n" + warnings + L"\r\n" + kept +
+                       (arpRemoved ? L"" : L"\r\nThe Add/Remove Programs entry was retained.")};
+    }
+    report(100, L"9NS was removed successfully.");
+    return {0, intro + L"\r\n\r\n" + kept +
+                   L"\r\n\r\nAny files in the installation folder that 9NS did not create were left in place."};
+}
+
+Completion performRepair() {
+    std::wstring error;
+    if (!openLog(error)) return {1, error};
+    report(5, L"Checking the registered installation...");
+    if (g_registeredDir.empty()) {
+        error = L"9NS is not installed on this computer.";
+        report(0, error);
+        return {3, error};
+    }
+    if (!IsUserAnAdmin()) { error = L"Run setup as Administrator."; report(0, error); return {3, error}; }
+    protected_paths::InstallManifest previous;
+    if (!readPreviousManifest(g_options.destination, previous, error)) { report(0, error); return {3, error}; }
+    // Repair is an uninstall-shaped quiesce followed by the normal install payload, so it
+    // reuses both paths instead of duplicating the extraction and integration logic.
+    report(10, L"Closing 9NS and stopping the background service...");
+    DetectedState detected;
+    detectState(detected);
+    AppProcesses processes;
+    if (!findInstalledProcesses(processes, error)) { report(10, error); return {1, error}; }
+    EnumWindows(requestAppShutdown, reinterpret_cast<LPARAM>(&processes));
+    {
+        std::wstring serviceError;
+        if (!stopOwnedService(service::kServiceName, g_options.destination + L"\\9ns.exe", false, serviceError) &&
+            serviceError.find(L"does not match") == std::wstring::npos) {
+            report(10, serviceError);
+            return {1, serviceError};
+        }
+    }
+    report(18, L"Waiting for 9NS and its DNS watchdog to exit...");
+    {
+        const ULONGLONG deadline = GetTickCount64() + 15000;
+        for (;;) {
+            AppProcesses remaining;
+            if (!findInstalledProcesses(remaining, error)) { report(18, error); return {1, error}; }
+            if (remaining.entries.empty()) break;
+            if (GetTickCount64() >= deadline) {
+                error = L"9NS is still running. Exit it from the tray menu and retry the repair.";
+                report(18, error);
+                return {1, error};
+            }
+            Sleep(200);
+        }
+    }
+    report(25, L"Restoring saved adapter DNS...");
+    if (PathFileExistsW((g_options.destination + L"\\9ns.exe").c_str()))
+        runHidden(g_options.destination + L"\\9ns.exe", L"--restore-dns --quiet");
+
+    report(35, L"Re-extracting and verifying the application files...");
+    protected_paths::InstallManifest manifest;
+    if (!installPayload(g_options.destination, previous, manifest, error)) { report(35, error); return {1, error}; }
+
+    std::wstring warnings;
+    auto warn = [&](const std::wstring& message) { warnings += message + L"\r\n"; report(70, L"Warning: " + message); };
+    const std::wstring exe = g_options.destination + L"\\9ns.exe";
+    report(60, L"Configuring shortcuts and Windows integration...");
+    for (const auto& shortcut : {std::pair<bool, int>{g_options.desktop, CSIDL_COMMON_DESKTOPDIRECTORY},
+                                 std::pair<bool, int>{g_options.startMenu, CSIDL_COMMON_PROGRAMS}}) {
+        if (!shortcut.first) continue;
+        wchar_t folder[MAX_PATH] = {};
+        if (SHGetFolderPathW(nullptr, shortcut.second, nullptr, 0, folder) != S_OK ||
+            !createShortcut(exe, std::wstring(folder) + L"\\9NS.lnk", L"9NS - Advanced System DNS Client",
+                            g_options.destination))
+            warn(shortcut.second == CSIDL_COMMON_PROGRAMS ? L"Start Menu shortcut creation failed."
+                                                          : L"Desktop shortcut creation failed.");
+    }
+    if (g_options.service && !configureService(exe, error)) warn(error);
+    if (g_options.driver && !installDriverPackage(g_options.destination + L"\\driver", error)) warn(error);
+    if (!registerUninstaller(g_options.destination)) warn(L"Add/Remove Programs registration failed.");
+    if (!warnings.empty()) {
+        report(100, L"Core files repaired; some optional integration steps need attention.");
+        return {4, L"Core files were repaired, but setup reported:\r\n\r\n" + warnings};
+    }
+    report(100, L"Repair completed successfully.");
+    return {0, L"9NS was repaired in " + g_options.destination +
+                   L".\r\n\r\nYour settings, logs and DNS backup in %ProgramData%\\9NS were not modified."};
+}
+
 DWORD WINAPI installThread(LPVOID) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     Completion result;
-    try { result = performInstall(); }
-    catch (const std::exception& e) { result = {1, L"Setup stopped: " + widen(e.what())}; logLine(result.text); }
+    try {
+        switch (g_options.mode) {
+            case setup::Mode::Uninstall: result = performUninstall(); break;
+            case setup::Mode::Repair: result = performRepair(); break;
+            default: result = performInstall(); break;
+        }
+    } catch (const std::exception& e) { result = {1, L"Setup stopped: " + widen(e.what())}; logLine(result.text); }
     if (g_logFailed && (result.code == 0 || result.code == 4)) {
         result.code = 4;
         result.text += L"\r\nSetup could not write the complete log. Check available disk space and permissions.";
@@ -1103,22 +1729,48 @@ std::wstring summary() {
            L"unless /log= specifies a new file.";
 }
 
+// The page order of the running mode. Install keeps its existing linear flow; uninstall
+// and repair skip everything that only concerns a fresh installation.
+std::vector<Page> pageSequence() {
+    switch (g_options.mode) {
+        case setup::Mode::Uninstall: return {Page::Welcome, Page::Remove, Page::Progress, Page::Finish};
+        case setup::Mode::Repair: return {Page::Welcome, Page::Review, Page::Progress, Page::Finish};
+        default:
+            return {Page::Welcome, Page::License, Page::Mode, Page::Destination, Page::Components,
+                    Page::Review, Page::Progress, Page::Finish};
+    }
+}
+
 void showPage(Page page) {
     g_page = page;
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < kPageCount; ++i)
         for (HWND control : g_pages[i]) ShowWindow(control, i == static_cast<int>(page) ? SW_SHOW : SW_HIDE);
     const wchar_t* titles[] = {L"Welcome to 9NS Setup", L"License agreement", L"Choose setup type",
                                L"Installation folder", L"Components and shortcuts", L"Ready to install",
-                               L"Installing 9NS", L"Setup complete"};
-    SetWindowTextW(g_hTitle, titles[static_cast<int>(page)]);
-    const std::wstring step = L"9NS 1.0.0  |  " + std::to_wstring(static_cast<int>(page) + 1) + L" of 8";
+                               L"Remove 9NS", L"Installing 9NS", L"Setup complete"};
+    const std::vector<Page> sequence = pageSequence();
+    const auto position = std::find(sequence.begin(), sequence.end(), page);
+    const int index = position == sequence.end() ? 0 : static_cast<int>(position - sequence.begin());
+    const wchar_t* title = page == Page::Progress && g_options.mode == setup::Mode::Uninstall
+        ? L"Removing 9NS"
+        : page == Page::Progress && g_options.mode == setup::Mode::Repair ? L"Repairing 9NS"
+        : titles[static_cast<int>(page)];
+    SetWindowTextW(g_hTitle, title);
+    const std::wstring step = L"9NS 1.0.0  |  " + std::to_wstring(index + 1) + L" of " +
+                              std::to_wstring(sequence.size());
     SetWindowTextW(g_hSubtitle, step.c_str());
-    ShowWindow(g_hBtnBack, page == Page::Welcome || page == Page::Progress || page == Page::Finish ? SW_HIDE : SW_SHOW);
+    ShowWindow(g_hBtnBack, index > 0 && page != Page::Progress && page != Page::Finish ? SW_SHOW : SW_HIDE);
     ShowWindow(g_hBtnCancel, page == Page::Finish ? SW_HIDE : SW_SHOW);
     EnableWindow(g_hBtnCancel, page != Page::Progress);
     EnableWindow(g_hBtnInstall, page != Page::Progress && (page != Page::License || checked(g_hAccept)));
-    SetWindowTextW(g_hBtnInstall, page == Page::Review ? L"Install" : page == Page::Finish ? L"Finish" : L"Next >");
-    if (page == Page::Review) SetWindowTextW(g_hReview, summary().c_str());
+    const bool uninstall = g_options.mode == setup::Mode::Uninstall;
+    const bool repair = g_options.mode == setup::Mode::Repair;
+    SetWindowTextW(g_hBtnInstall, page == Page::Review && uninstall ? L"Remove"
+                                  : page == Page::Review && repair ? L"Repair"
+                                  : page == Page::Review ? L"Install"
+                                  : page == Page::Finish ? L"Finish" : L"Next >");
+    if (page == Page::Review && uninstall && g_hDetected) SetWindowTextW(g_hReview, detectedSummary(g_detected).c_str());
+    else if (page == Page::Review) SetWindowTextW(g_hReview, summary().c_str());
     SetFocus(page == Page::License && !checked(g_hAccept) ? g_hAccept : g_hBtnInstall);
 }
 
@@ -1135,13 +1787,31 @@ std::wstring licenseText() {
 
 void createPages() {
     addControl(Page::Welcome, L"STATIC", L"Encrypted DNS. System-wide protection. Your choice of integration.", 0, 28, 100, 620, 40);
-    const std::wstring welcome = g_registeredDir.empty()
-        ? L"This wizard installs 9NS for all users on this computer. Administrator privileges are required."
-        : L"An existing 9NS installation was found in:\r\n" + g_registeredDir + L"\r\n\r\nSetup will upgrade or reinstall it in place.";
+    std::wstring welcome;
+    std::wstring advice;
+    if (g_options.mode == setup::Mode::Uninstall) {
+        welcome = g_registeredDir.empty()
+            ? L"9NS is not installed on this computer."
+            : L"This wizard removes 9NS from:\r\n" + g_registeredDir;
+        advice = L"Setup stops 9NS and its background service, restores adapter DNS, and then removes "
+                 L"the installed files. Your settings in %ProgramData%\\9NS are kept unless you clear the option "
+                 L"on the next page.";
+    } else if (g_options.mode == setup::Mode::Repair) {
+        welcome = g_registeredDir.empty()
+            ? L"9NS is not installed on this computer."
+            : L"This wizard repairs the 9NS installation in:\r\n" + g_registeredDir;
+        advice = L"Setup stops 9NS, restores adapter DNS, re-extracts and verifies the application files, "
+                 L"and re-registers the shortcuts, background service and driver you selected.\r\n\r\n"
+                 L"Your settings, logs and DNS backup in %ProgramData%\\9NS are never modified.";
+    } else {
+        welcome = g_registeredDir.empty()
+            ? L"This wizard installs 9NS for all users on this computer. Administrator privileges are required."
+            : L"An existing 9NS installation was found in:\r\n" + g_registeredDir + L"\r\n\r\nSetup will upgrade or reinstall it in place.";
+        advice = L"Before installing, exit 9NS from its tray menu and stop its background service if running. "
+                 L"This lets 9NS restore adapter DNS normally.\r\n\r\nExisting settings are preserved. The kernel driver is optional and is not selected by default.";
+    }
     addControl(Page::Welcome, L"STATIC", welcome.c_str(), 0, 28, 155, 620, 110);
-    addControl(Page::Welcome, L"STATIC", L"Before installing, exit 9NS from its tray menu and stop its background service if running. "
-               L"This lets 9NS restore adapter DNS normally.\r\n\r\nExisting settings are preserved. The kernel driver is optional and is not selected by default.",
-               0, 28, 290, 620, 130);
+    addControl(Page::Welcome, L"STATIC", advice.c_str(), 0, 28, 290, 620, 130);
     const std::wstring license = licenseText();
     addControl(Page::License, L"EDIT", license.c_str(), ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP,
                28, 100, 620, 285, 0, WS_EX_CLIENTEDGE);
@@ -1175,6 +1845,17 @@ void createPages() {
                0, 28, 315, 620, 105);
     g_hReview = addControl(Page::Review, L"EDIT", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP,
                            28, 100, 620, 330, 0, WS_EX_CLIENTEDGE);
+    addControl(Page::Remove, L"STATIC", L"Setup will stop 9NS, restore adapter DNS, remove the background service, "
+               L"the optional DNS guard driver and its driver-store package, both shortcuts and the installed files, "
+               L"and then delete the Add/Remove Programs entry.", 0, 28, 100, 620, 60);
+    g_hDetected = addControl(Page::Remove, L"EDIT", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
+                             28, 165, 620, 200, 0, WS_EX_CLIENTEDGE);
+    g_hChkRemoveData = addControl(Page::Remove, L"BUTTON",
+                                  L"Also remove my settings, logs and DNS backup in %ProgramData%\\9NS",
+                                  BS_AUTOCHECKBOX | WS_TABSTOP, 28, 380, 620, 26, 120);
+    check(g_hChkRemoveData, false);
+    detectState(g_detected);
+    SetWindowTextW(g_hDetected, detectedSummary(g_detected).c_str());
     g_hProgress = addControl(Page::Progress, PROGRESS_CLASSW, L"", PBS_SMOOTH, 28, 110, 620, 22);
     SendMessageW(g_hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
     g_hStatus = addControl(Page::Progress, L"STATIC", L"Preparing...", 0, 28, 150, 620, 60);
@@ -1186,8 +1867,25 @@ void createPages() {
 }
 
 void nextPage() {
+    const std::vector<Page> sequence = pageSequence();
+    const auto position = std::find(sequence.begin(), sequence.end(), g_page);
+    if (position == sequence.end()) return;
+    const auto advance = [&sequence, &position]() {
+        return position + 1 < sequence.end() ? *(position + 1) : Page::Finish;
+    };
     switch (g_page) {
-        case Page::Welcome: showPage(Page::License); break;
+        case Page::Welcome: showPage(advance()); break;
+        case Page::Remove: {
+            g_options.keepData = !checked(g_hChkRemoveData);
+            g_installing = true;
+            showPage(Page::Progress);
+            HANDLE thread = CreateThread(nullptr, 0, installThread, nullptr, 0, nullptr);
+            if (!thread) {
+                auto* failure = new Completion{1, L"The uninstall worker could not be started."};
+                PostMessageW(g_hWnd, kCompleteMessage, 0, reinterpret_cast<LPARAM>(failure));
+            } else CloseHandle(thread);
+            break;
+        }
         case Page::License:
             if (checked(g_hAccept)) { g_options.acceptLicense = true; showPage(Page::Mode); }
             break;
@@ -1215,13 +1913,14 @@ void nextPage() {
             showPage(Page::Progress);
             HANDLE thread = CreateThread(nullptr, 0, installThread, nullptr, 0, nullptr);
             if (!thread) {
-                auto* failure = new Completion{1, L"The installation worker could not be started."};
+                auto* failure = new Completion{1, L"The setup worker could not be started."};
                 PostMessageW(g_hWnd, kCompleteMessage, 0, reinterpret_cast<LPARAM>(failure));
             } else CloseHandle(thread);
             break;
         }
         case Page::Finish:
-            if (g_options.launch && (g_exitCode == 0 || g_exitCode == 4)) {
+            if (g_options.launch && g_options.mode == setup::Mode::Install &&
+                (g_exitCode == 0 || g_exitCode == 4)) {
                 const std::wstring exe = g_options.destination + L"\\9ns.exe";
                 if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr,
                                                            g_options.destination.c_str(), SW_SHOW)) <= 32)
@@ -1326,8 +2025,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
             } else if (id == IDOK && !g_installing) nextPage();
             else if (id == 103 && !g_installing) {
-                if (g_page == Page::Review) showPage(g_custom ? Page::Components : Page::Mode);
-                else showPage(static_cast<Page>(static_cast<int>(g_page) - 1));
+                const std::vector<Page> sequence = pageSequence();
+                const auto position = std::find(sequence.begin(), sequence.end(), g_page);
+                if (g_options.mode == setup::Mode::Install) {
+                    if (g_page == Page::Review) showPage(g_custom ? Page::Components : Page::Mode);
+                    else if (g_page == Page::Components) showPage(Page::Destination);
+                    else if (g_page == Page::Destination) showPage(Page::Mode);
+                    else showPage(Page::Welcome);
+                } else if (position != sequence.end() && position != sequence.begin()) {
+                    showPage(*(position - 1));
+                }
             } else if (id == IDCANCEL && !g_installing) DestroyWindow(hWnd);
             break;
         }
@@ -1350,7 +2057,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             text += L"\r\n\r\nSetup log: " + g_logPath;
             SetWindowTextW(g_hFinish, text.c_str());
             showPage(Page::Finish);
-            SetWindowTextW(g_hTitle, result->code == 0 ? L"Installation complete" : result->code == 4 ? L"Installed with warnings" : L"Setup stopped");
+            const bool removed = g_options.mode == setup::Mode::Uninstall;
+            const bool repaired = g_options.mode == setup::Mode::Repair;
+            SetWindowTextW(g_hTitle, result->code == 0
+                ? (removed ? L"Removal complete" : repaired ? L"Repair complete" : L"Installation complete")
+                : result->code == 4
+                    ? (removed ? L"Removed with warnings" : repaired ? L"Repaired with warnings" : L"Installed with warnings")
+                    : L"Setup stopped");
             break;
         }
         case WM_CLOSE: if (!g_installing) DestroyWindow(hWnd); break;
@@ -1411,20 +2124,44 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
     if (g_options.help) {
         const std::wstring help = L"9NS Setup 1.0.0\r\n\r\n/silent /acceptlicense   Unattended install (no app launch)\r\n"
+            L"/uninstall              Remove 9NS (no /acceptlicense needed)\r\n"
+            L"/repair                 Repair the registered 9NS installation\r\n"
+            L"/keepdata=yes|no        With /uninstall: keep (default) or remove %ProgramData%\\9NS\r\n"
             L"/dir=<absolute folder>  Install location; existing registration is reused\r\n"
             L"/log=<absolute file>    New UTF-8 log file; parent folder must exist\r\n"
             L"/desktop=yes|no /startmenu=yes|no /service=yes|no /driver=yes|no /launch=yes|no\r\n"
             L"/help or /?             Show this help\r\n\r\n"
             L"Defaults: shortcuts yes; service and driver no; launch yes (never in silent mode).\r\n"
             L"Exit codes: 0 success; 1 installation/log failure; 2 invalid options; 3 preflight failure; "
-            L"4 installed with integration warnings; 1602 cancelled.\r\n"
-            L"Setup requests elevation; /silent does not bypass UAC. Existing integrations are not removed.\r\n";
+            L"4 completed with integration warnings; 1602 cancelled.\r\n"
+            L"Setup requests elevation; /silent does not bypass UAC. Uninstall always keeps unknown files "
+            L"in the installation folder and never deletes a config.json it did not create.\r\n";
         consoleOutput(help);
         if (!silentRequested) MessageBoxW(nullptr, help.c_str(), L"9NS Setup help", MB_OK | MB_ICONINFORMATION);
         return 0;
     }
     for (auto& ch : g_options.destination) if (ch == L'/') ch = L'\\';
     while (g_options.destination.size() > 3 && g_options.destination.back() == L'\\') g_options.destination.pop_back();
+    // Uninstall and repair always operate on the registered location; a different /dir
+    // would delete or rewrite a tree the registry does not own.
+    if (g_options.mode != setup::Mode::Install) {
+        if (g_registeredDir.empty()) {
+            const std::wstring message = L"9NS is not installed on this computer.";
+            consoleOutput(message + L"\r\n");
+            if (!g_options.silent) MessageBoxW(nullptr, message.c_str(), L"9NS Setup", MB_OK | MB_ICONINFORMATION);
+            return 3;
+        }
+        if (!g_options.destination.empty() &&
+            protected_paths::normalizePath(g_options.destination) !=
+                protected_paths::normalizePath(g_registeredDir)) {
+            const std::wstring message = L"The requested folder does not match the registered installation in " +
+                                         g_registeredDir + L".";
+            consoleOutput(message + L"\r\n");
+            if (!g_options.silent) MessageBoxW(nullptr, message.c_str(), L"9NS Setup", MB_OK | MB_ICONERROR);
+            return 3;
+        }
+        g_options.destination = g_registeredDir;
+    }
     // One installer at a time across all Windows sessions, including silent setup.
     HANDLE lock = CreateMutexW(nullptr, FALSE, L"Global\\9NSSetup");
     const bool busy = GetLastError() == ERROR_ALREADY_EXISTS;

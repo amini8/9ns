@@ -30,6 +30,9 @@ struct ResolveEvent {
     dns::Bytes response;
 };
 
+// Outcome of a hostname lookup performed for the local forwarding proxy.
+enum class LookupVerdict { Allowed, Blocked, NotFound, Failed };
+
 // Answers one DNS query. Coordinates Rules, Pools, Upstreams, Reply Cache, and DNSSEC Validation.
 class Resolver {
 public:
@@ -43,6 +46,13 @@ public:
 
     // Resolves a query and emits a structured event.
     dns::Bytes resolve(const dns::Bytes& query, const dns::Query& parsed, const std::string& clientIp = "127.0.0.1");
+
+    // Resolves a host name for the local forwarding proxy through the same rules, cache,
+    // pools and DNSSEC path as a DNS query, so a blocked name is reported instead of being
+    // connected to. Addresses are numeric text, IPv4 before IPv6. A blocked, missing or
+    // failed lookup leaves addresses empty. Safe to call from multiple threads.
+    LookupVerdict resolveAddresses(const std::string& name, const std::string& clientIp,
+                                   std::vector<std::string>& addresses);
 
     void setEventSink(EventSink sink);
     Cache& cache() { return cache_; }

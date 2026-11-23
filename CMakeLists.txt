@@ -48,10 +48,12 @@ qt_add_executable(9ns WIN32
     src/core/DnsMessage.cpp
     src/core/DnsSec.cpp
     src/core/Engine.cpp
+    src/core/ForwardProxy.cpp
     src/core/Logger.cpp
     src/core/Pool.cpp
     src/core/ProtectedDirectory.cpp
     src/core/Proxy.cpp
+    src/core/ProxyProtocol.cpp
     src/core/Resolver.cpp
     src/core/Rules.cpp
     src/core/SystemDns.cpp
@@ -60,6 +62,7 @@ qt_add_executable(9ns WIN32
     src/transports/DoqUpstream.cpp
     src/transports/DotUpstream.cpp
     src/transports/OdohUpstream.cpp
+    src/transports/ProxyTunnel.cpp
     src/transports/Stamp.cpp
     src/transports/Upstream.cpp
     src/web/PublicResolversLoader.cpp

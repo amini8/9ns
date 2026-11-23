@@ -29,6 +29,10 @@ private:
     bool fetchCertificate(std::string& error);
     bool acceptCertificate(const dns::Bytes& cert, std::string& error);
 
+    // Numeric server endpoint text, for tunnelling the TCP leg through an upstream proxy.
+    std::string numericServerHost() const;
+    uint16_t numericServerPort() const;
+
     DnsStamp stamp_;
     sockaddr_storage server_{};
     int serverLength_ = 0;

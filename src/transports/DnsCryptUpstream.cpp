@@ -12,6 +12,7 @@
 #include <sodium.h>
 
 #include "core/Net.h"
+#include "transports/ProxyTunnel.h"
 
 namespace {
 
@@ -335,12 +336,32 @@ bool DnsCryptUpstream::roundTripUdp(const dns::Bytes& packet, const ReplyFilter&
     }
 }
 
+std::string DnsCryptUpstream::numericServerHost() const {
+    char host[NI_MAXHOST] = {};
+    return getnameinfo(reinterpret_cast<const sockaddr*>(&server_), serverLength_, host, sizeof(host), nullptr, 0,
+                       NI_NUMERICHOST) == 0
+               ? std::string(host)
+               : std::string();
+}
+
+uint16_t DnsCryptUpstream::numericServerPort() const {
+    char service[16] = {};
+    if (getnameinfo(reinterpret_cast<const sockaddr*>(&server_), serverLength_, nullptr, 0, service,
+                    sizeof(service), NI_NUMERICSERV) != 0)
+        return kDefaultPort;
+    return static_cast<uint16_t>(std::atoi(service));
+}
+
 bool DnsCryptUpstream::roundTripTcp(const dns::Bytes& packet, dns::Bytes& reply, std::string& error) const {
     if (packet.size() > 0xFFFF) {
         error = "message is too large for TCP";
         return false;
     }
-    Socket tcp = openConnected(server_, serverLength_, SOCK_STREAM, IPPROTO_TCP, error);
+    // The DNSCrypt TCP leg can be tunnelled; its UDP leg cannot, and validateConfig rejects an
+    // upstream proxy with a UDP-only DNSCrypt server instead of leaking around it.
+    Socket tcp = upstreamProxy().enabled
+        ? openProxyTunnel(upstreamProxy(), numericServerHost(), numericServerPort(), error)
+        : openConnected(server_, serverLength_, SOCK_STREAM, IPPROTO_TCP, error);
     if (!tcp.valid()) {
         return false;
     }

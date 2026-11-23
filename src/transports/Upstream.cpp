@@ -14,6 +14,7 @@
 #include "transports/DoqUpstream.h"
 #include "transports/DotUpstream.h"
 #include "transports/OdohUpstream.h"
+#include "transports/ProxyTunnel.h"
 #include "transports/Stamp.h"
 #include "core/Text.h"
 #include "transports/Upstream.h"
@@ -73,6 +74,22 @@ public:
         parseEndpoint(address, kPlainPort, server_, length_);
     }
 
+    // The numeric address text and port, for tunnelling through an upstream proxy.
+    std::string numericHost() const {
+        char host[NI_MAXHOST] = {};
+        return getnameinfo(reinterpret_cast<const sockaddr*>(&server_), length_, host, sizeof(host), nullptr, 0,
+                           NI_NUMERICHOST) == 0
+                   ? std::string(host)
+                   : std::string();
+    }
+    uint16_t serverPort() const {
+        char service[16] = {};
+        if (getnameinfo(reinterpret_cast<const sockaddr*>(&server_), length_, nullptr, 0, service,
+                        sizeof(service), NI_NUMERICSERV) != 0)
+            return kPlainPort;
+        return static_cast<uint16_t>(std::atoi(service));
+    }
+
     bool exchange(const dns::Bytes& query, dns::Bytes& response, std::string& error) override {
         if (query.size() < dns::kHeaderSize) {
             error = "query is too short";
@@ -125,7 +142,11 @@ private:
             error = "query is too large for TCP";
             return false;
         }
-        Socket sock = openConnected(server_, length_, SOCK_STREAM, IPPROTO_TCP, error);
+        // A configured upstream proxy is applied here and never bypassed: falling back to a
+        // direct connection would leak the query around the corporate proxy.
+        Socket sock = upstreamProxy().enabled
+            ? openProxyTunnel(upstreamProxy(), numericHost(), serverPort(), error)
+            : openConnected(server_, length_, SOCK_STREAM, IPPROTO_TCP, error);
         if (!sock.valid()) {
             return false;
         }
@@ -171,8 +192,14 @@ public:
     }
 
     bool exchange(const dns::Bytes& query, dns::Bytes& response, std::string& error) override {
-        WinHttpHandle session(WinHttpOpen(L"9NS/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
-                                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+        std::wstring proxyName;
+        const bool proxied = winHttpProxyName(upstreamProxy(), 8080, proxyName, error);
+        // A configured proxy that WinHTTP cannot use must fail, never fall back to direct.
+        if (upstreamProxy().enabled && !proxied) return false;
+        WinHttpHandle session(WinHttpOpen(L"9NS/1.0",
+                                          proxied ? WINHTTP_ACCESS_TYPE_NAMED_PROXY : WINHTTP_ACCESS_TYPE_NO_PROXY,
+                                          proxied ? proxyName.c_str() : WINHTTP_NO_PROXY_NAME,
+                                          WINHTTP_NO_PROXY_BYPASS, 0));
         if (!session.get()) {
             error = "cannot open HTTP session (error " + std::to_string(GetLastError()) + ")";
             return false;
@@ -192,8 +219,10 @@ public:
             error = "cannot open DoH request (error " + std::to_string(GetLastError()) + ")";
             return false;
         }
-
-        if (!bootstrapIps_.empty()) {
+        if (proxied) applyWinHttpCredentials(request.get(), upstreamProxy());
+        // Behind a proxy WinHTTP resolves the proxy, not the DoH host, so bootstrap pinning
+        // would conflict with the tunnel and is skipped.
+        if (!bootstrapIps_.empty() && !proxied) {
             const std::wstring bootstrap = widen(bootstrapIps_.front());
             // Resolve the bootstrap IP while TLS identity stays host_: SNI and
             // certificate verification name the URL host, not the address literal.
@@ -402,8 +431,10 @@ std::unique_ptr<Upstream> makeUpstream(const UpstreamConfig& config) {
 
 }  // namespace
 
-std::unique_ptr<Upstream> Upstream::create(const UpstreamConfig& config) {
+std::unique_ptr<Upstream> Upstream::create(const UpstreamConfig& config,
+                                           const UpstreamProxyConfig& proxy) {
     std::unique_ptr<Upstream> upstream = makeUpstream(config);
+    upstream->setUpstreamProxy(proxy);
     // Channel trust is a property of the resolved transport plus its tls_verify
     // setting; encryption alone never authenticates an upstream.
     upstream->setAuthenticated(isAuthenticatedChannel(upstream->type(), config.tlsVerify));

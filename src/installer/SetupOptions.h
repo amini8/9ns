@@ -10,7 +10,11 @@
 
 namespace setup {
 
+enum class Mode { Install, Uninstall, Repair };
+
 struct Options {
+    Mode mode = Mode::Install;
+    bool keepData = true;
     std::wstring destination, logPath;
     bool desktop = true;
     bool startMenu = true;
@@ -47,7 +51,9 @@ inline bool parseOptions(const std::vector<std::wstring>& arguments,
         else if (flag == L"/service") toggle = &parsed.service;
         else if (flag == L"/driver") toggle = &parsed.driver;
         else if (flag == L"/launch") toggle = &parsed.launch;
-        const bool standalone = flag == L"/silent" || flag == L"/acceptlicense" || flag == L"/help";
+        else if (flag == L"/keepdata") toggle = &parsed.keepData;
+        const bool standalone = flag == L"/silent" || flag == L"/acceptlicense" || flag == L"/help" ||
+                                flag == L"/uninstall" || flag == L"/repair";
         const bool path = flag == L"/dir" || flag == L"/log";
         if (!toggle && !standalone && !path) {
             error = L"Unknown option: " + argument;
@@ -64,6 +70,8 @@ inline bool parseOptions(const std::vector<std::wstring>& arguments,
             }
             if (flag == L"/silent") parsed.silent = true;
             else if (flag == L"/acceptlicense") parsed.acceptLicense = true;
+            else if (flag == L"/uninstall") parsed.mode = Mode::Uninstall;
+            else if (flag == L"/repair") parsed.mode = Mode::Repair;
             else parsed.help = true;
         } else {
             if (equals == std::wstring::npos || equals + 1 == argument.size()) {
@@ -84,7 +92,20 @@ inline bool parseOptions(const std::vector<std::wstring>& arguments,
             }
         }
     }
-    if (parsed.silent && !parsed.acceptLicense && !parsed.help) {
+    if (seen.count(L"/uninstall") && seen.count(L"/repair")) {
+        error = L"/uninstall and /repair are mutually exclusive";
+        return false;
+    }
+    if (parsed.mode == Mode::Uninstall) {
+        for (const auto* flag : {L"/desktop", L"/startmenu", L"/service", L"/driver", L"/launch"}) {
+            if (seen.count(flag)) { error = L"/uninstall rejects installation option: " + std::wstring(flag); return false; }
+        }
+    } else if (seen.count(L"/keepdata")) {
+        error = L"/keepdata is only valid with /uninstall";
+        return false;
+    }
+    if (parsed.mode != Mode::Install) parsed.launch = false;
+    if (parsed.silent && parsed.mode == Mode::Install && !parsed.acceptLicense && !parsed.help) {
         error = L"/silent requires /acceptlicense";
         return false;
     }

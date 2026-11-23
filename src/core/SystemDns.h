@@ -34,7 +34,9 @@ public:
     void restore();
 
     // Restores adapters from a backup file left by a run that did not exit cleanly.
-    void restoreLeftover();
+    bool restoreLeftover();
+
+    static bool clearLeakPreventionPolicy();
 
     bool active() const { return active_; }
 

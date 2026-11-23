@@ -54,6 +54,17 @@ void Engine::start(const Config& config) {
     proxy_ = std::move(proxy);
     port_ = config.listenPort;
 
+    if (config.forwardProxy.enabled) {
+        try {
+            auto forward = std::make_unique<ForwardProxy>(*resolver_, logger_, config.forwardProxy, config.listenPort);
+            forward->start();
+            forwardProxy_ = std::move(forward);
+            logger_.log(Logger::Level::Info, "Forward proxy listening on loopback port " + std::to_string(config.forwardProxy.port));
+        } catch (const std::exception& e) {
+            logger_.log(Logger::Level::Error, "Forward proxy unavailable: " + std::string(e.what()));
+        }
+    }
+
     if (config.systemDns) {
         warnAboutHostNames(config, logger_);
         if (!applySystemDns()) {
@@ -67,6 +78,7 @@ void Engine::start(const Config& config) {
 
 void Engine::stop() {
     systemDns_.restore();
+    forwardProxy_.reset();
     proxy_.reset();
     resolver_.reset();
 }

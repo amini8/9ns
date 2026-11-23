@@ -914,6 +914,13 @@ void MainWindow::updateState() {
         } else if (runtimeConfig_.systemDns) {
             statusText += tr(" | <font color='#e67e22'><b>System DNS Inactive (Run as Administrator)</b></font>");
         }
+        if (engine_.forwardProxyEnabled()) {
+            const QString forwardStatus = engine_.forwardProxyRunning()
+                ? tr("Forward proxy: loopback port %1").arg(engine_.forwardProxyPort())
+                : tr("Forward proxy: failed (see System Log)");
+            statusText += QStringLiteral(" | ") + forwardStatus;
+            if (headerStatusBadge_) headerStatusBadge_->setText(headerStatusBadge_->text() + QStringLiteral(" | ") + forwardStatus);
+        }
         if (overviewPage_) {
             overviewPage_->setProtectionSummary(statusText);
         }
