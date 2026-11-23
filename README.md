@@ -188,7 +188,7 @@ development, test and packaging workflow.
 
 ## Windows installer
 
-The native `9NS-Setup-1.0.0.exe` installs for all users and requests administrator
+The native `9NS-Setup-1.1.0.exe` installs for all users and requests administrator
 rights. Its wizard includes the license, Typical or Custom setup, installation
 folder, components, a review of choices, progress details and a completion report.
 Typical setup uses the current defaults; Custom exposes each choice. Fresh
@@ -226,7 +226,7 @@ never launches the app, even if `/launch=yes` is supplied. UAC elevation is not
 bypassed. For example:
 
 ```powershell
-$setup = Start-Process -FilePath .\9NS-Setup-1.0.0.exe -ArgumentList @(
+$setup = Start-Process -FilePath .\9NS-Setup-1.1.0.exe -ArgumentList @(
     '/silent', '/acceptlicense', '/service=yes', '/driver=no',
     '/desktop=no', '/startmenu=yes'
 ) -Wait -PassThru

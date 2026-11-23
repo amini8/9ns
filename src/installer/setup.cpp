@@ -45,6 +45,9 @@ constexpr int kWndWidth = 700;
 constexpr int kWndHeight = 560;
 constexpr UINT kStatusMessage = WM_APP + 1;
 constexpr UINT kCompleteMessage = WM_APP + 2;
+// Single source of the version this installer reports. Keep in step with
+// packaging/9ns.wxs, packaging/9ns-setup.iss and the scripts that name the output.
+constexpr wchar_t kAppVersion[] = L"1.1.0";
 constexpr wchar_t kUninstallKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\9NS";
 enum class Page { Welcome, License, Mode, Destination, Components, Review, Remove, Progress, Finish };
 constexpr int kPageCount = 9;
@@ -734,7 +737,7 @@ bool registerUninstaller(const std::wstring& destDir) {
     HKEY hKey = nullptr;
     if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, subkey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &hKey, nullptr) == ERROR_SUCCESS) {
         std::wstring name = L"9NS";
-        std::wstring ver = L"1.0.0";
+        std::wstring ver = kAppVersion;
         std::wstring pub = L"9NS Team";
         std::wstring icon = destDir + L"\\9ns.exe,0";
         const std::wstring uninstCmd = protected_paths::buildNativeUninstallString(destDir + L"\\uninstall.exe");
@@ -886,7 +889,7 @@ bool openLog(std::wstring& error) {
                 L"). Choose a new filename in an existing folder.";
         return false;
     }
-    logLine(L"9NS Setup 1.0.0; destination: " + g_options.destination);
+    logLine(std::wstring(L"9NS Setup ") + kAppVersion + L"; destination: " + g_options.destination);
     return true;
 }
 
@@ -1717,7 +1720,7 @@ void check(HWND control, bool value) { SendMessageW(control, BM_SETCHECK, value 
 
 std::wstring summary() {
     auto yes = [](bool value) { return value ? L"Yes" : L"No"; };
-    return std::wstring(g_registeredDir.empty() ? L"Install" : L"Upgrade / reinstall") + L" 9NS 1.0.0\r\n\r\nFolder: " +
+    return std::wstring(g_registeredDir.empty() ? L"Install" : L"Upgrade / reinstall") + L" 9NS " + kAppVersion + L"\r\n\r\nFolder: " +
            g_options.destination + L"\r\nDesktop shortcut: " + yes(g_options.desktop) +
            L"\r\nStart Menu shortcut: " + yes(g_options.startMenu) + L"\r\nRegister background service: " + yes(g_options.service) +
            L"\r\nInstall kernel DNS guard: " + yes(g_options.driver) + L"\r\nLaunch on Finish: " + yes(g_options.launch) +
@@ -1756,7 +1759,7 @@ void showPage(Page page) {
         : page == Page::Progress && g_options.mode == setup::Mode::Repair ? L"Repairing 9NS"
         : titles[static_cast<int>(page)];
     SetWindowTextW(g_hTitle, title);
-    const std::wstring step = L"9NS 1.0.0  |  " + std::to_wstring(index + 1) + L" of " +
+    const std::wstring step = std::wstring(L"9NS ") + kAppVersion + L"  |  " + std::to_wstring(index + 1) + L" of " +
                               std::to_wstring(sequence.size());
     SetWindowTextW(g_hSubtitle, step.c_str());
     ShowWindow(g_hBtnBack, index > 0 && page != Page::Progress && page != Page::Finish ? SW_SHOW : SW_HIDE);
@@ -2123,7 +2126,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         return 2;
     }
     if (g_options.help) {
-        const std::wstring help = L"9NS Setup 1.0.0\r\n\r\n/silent /acceptlicense   Unattended install (no app launch)\r\n"
+        const std::wstring help = std::wstring(L"9NS Setup ") + kAppVersion + L"\r\n\r\n/silent /acceptlicense   Unattended install (no app launch)\r\n"
             L"/uninstall              Remove 9NS (no /acceptlicense needed)\r\n"
             L"/repair                 Repair the registered 9NS installation\r\n"
             L"/keepdata=yes|no        With /uninstall: keep (default) or remove %ProgramData%\\9NS\r\n"
@@ -2187,7 +2190,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     RegisterClassExW(&wc);
     const UINT dpi = windowDpi(nullptr);
     const int width = MulDiv(kWndWidth, dpi, 96), height = MulDiv(kWndHeight, dpi, 96);
-    g_hWnd = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_CONTROLPARENT, wc.lpszClassName, L"9NS Setup (v1.0.0)",
+    g_hWnd = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_CONTROLPARENT, wc.lpszClassName,
+                             (std::wstring(L"9NS Setup (v") + kAppVersion + L")").c_str(),
                              WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                              (GetSystemMetrics(SM_CXSCREEN) - width) / 2,
                              (GetSystemMetrics(SM_CYSCREEN) - height) / 2,

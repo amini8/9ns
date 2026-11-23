@@ -269,7 +269,7 @@ void MainWindow::buildHeaderCard(QVBoxLayout* mainLayout) {
 
     auto* titleCol = new QVBoxLayout();
     titleCol->setSpacing(0);
-    auto* titleLabel = new QLabel(QStringLiteral("<b style='font-size: 15px; color: #0F172A;'>9NS</b> <span style='font-size: 11px; color: #64748B;'>v1.0.0</span>"), headerCard);
+    auto* titleLabel = new QLabel(QStringLiteral("<b style='font-size: 15px; color: #0F172A;'>9NS</b> <span style='font-size: 11px; color: #64748B;'>v1.1.0</span>"), headerCard);
     auto* subLabel = new QLabel(tr("Encrypted DNS Client & System Protection"), headerCard);
     subLabel->setStyleSheet(QStringLiteral("color: #64748B; font-size: 11px;"));
     titleCol->addWidget(titleLabel);
@@ -1365,7 +1365,7 @@ void MainWindow::onAbout() {
     QMessageBox msg(this);
     msg.setWindowTitle(tr("About 9NS"));
     msg.setIconPixmap(QIcon(QStringLiteral(":/icons/9ns-mark.svg")).pixmap(64, 64));
-    msg.setText(tr("<h3>9NS v1.0.0</h3>"
+    msg.setText(tr("<h3>9NS v1.1.0</h3>"
                    "<p>Modern Encrypted System DNS Client & Proxy.</p>"
                    "<ul>"
                    "<li><b>Protocols:</b> Plain DNS, DNS over HTTPS (DoH / HTTP/2), DNS over TLS (DoT), DNS over QUIC (DoQ), Oblivious DoH (ODoH), DNSCrypt v2, Anonymized Relays.</li>"

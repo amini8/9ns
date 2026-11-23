@@ -110,8 +110,8 @@ jobs:
           name: 9ns-windows-x64
           path: |
             dist/9ns-windows-x64.zip
-            dist/9NS-Setup-1.0.0.exe
-            dist/9NS-Setup-1.0.0.msi
+            dist/9NS-Setup-*.exe
+            dist/9NS-Setup-*.msi
 
   # Publish a GitHub Release only for v* tag pushes.
   release:
@@ -131,8 +131,10 @@ jobs:
         uses: softprops/action-gh-release@v2  # pin to SHA for release integrity
         with:
           name: 9NS ${{ github.ref_name }}
-          generate_release_notes: true
+          # Release notes are written by hand on the release itself. Do not set
+          # generate_release_notes here: it replaces a hand-written body with
+          # auto-generated changelog links on every tag push.
           files: |
             dist/9ns-windows-x64.zip
-            dist/9NS-Setup-1.0.0.exe
-            dist/9NS-Setup-1.0.0.msi
+            dist/9NS-Setup-*.exe
+            dist/9NS-Setup-*.msi

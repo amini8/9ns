@@ -2,7 +2,7 @@
 ; 9NS - Modern Encrypted DNS Proxy & System Filtering Engine
 
 #define MyAppName "9NS"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "9NS Team"
 #define MyAppURL "https://github.com/amini8/9ns"
 #define MyAppExeName "9ns.exe"

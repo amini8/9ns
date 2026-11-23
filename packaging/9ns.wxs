@@ -7,7 +7,7 @@
   scripts/create_msi.py, which harvests dist/9ns-windows-x64 via heat.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="9NS" Language="1033" Version="1.0.0" Manufacturer="9NS Team"
+  <Product Id="*" Name="9NS" Language="1033" Version="1.1.0" Manufacturer="9NS Team"
            UpgradeCode="9852A1A1-32B1-451F-84BC-4D8DCFF081AB">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
              Description="9NS - Advanced System DNS Client" />

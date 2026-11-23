@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import zipfile
+import glob
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -265,7 +266,9 @@ else:
 # TEST GROUP 6: Windows Setup Installer Verification
 # ---------------------------------------------------------------------------
 print(f"\n{BOLD}6. Windows Setup Installer Verification:{RESET}")
-setup_path = "dist/9NS-Setup-1.0.0.exe"
+# Version-agnostic: the installer name tracks kAppVersion in setup.cpp.
+setup_candidates = sorted(glob.glob("dist/9NS-Setup-*.exe"))
+setup_path = setup_candidates[-1] if setup_candidates else "dist/9NS-Setup-<version>.exe"
 if os.path.isfile(setup_path):
     res_objdump = subprocess.run([OBJDUMP, "-f", setup_path], capture_output=True, text=True)
     is_x64 = "pei-x86-64" in res_objdump.stdout

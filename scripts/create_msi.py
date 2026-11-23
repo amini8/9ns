@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 9NS Windows MSI Installer Generator
-Builds dist/9NS-Setup-1.0.0.msi with the WiX Toolset (3.14): harvests the
+Builds dist/9NS-Setup-<VERSION>.msi with the WiX Toolset (3.14): harvests the
 portable package (dist/9ns-windows-x64) with heat, compiles packaging/9ns.wxs
 with candle, and links an embedded-cab MSI with light (WixUI_InstallDir).
 Service and driver installation are opt-in via INSTALLSERVICE=1 / INSTALLDRIVER=1.
@@ -18,7 +18,9 @@ DIST_DIR = os.path.join(ROOT_DIR, "dist")
 PACKAGE_DIR = os.path.join(DIST_DIR, "9ns-windows-x64")
 WXS = os.path.join(ROOT_DIR, "packaging", "9ns.wxs")
 HARVEST_WXS = os.path.join(DIST_DIR, "PackageFiles.wxs")
-MSI_OUTPUT = os.path.join(DIST_DIR, "9NS-Setup-1.0.0.msi")
+# Keep in step with kAppVersion in src/installer/setup.cpp and packaging/9ns.wxs.
+VERSION = "1.1.0"
+MSI_OUTPUT = os.path.join(DIST_DIR, f"9NS-Setup-{VERSION}.msi")
 
 
 def find_wix_tool(name):

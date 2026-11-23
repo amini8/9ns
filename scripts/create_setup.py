@@ -2,7 +2,7 @@
 """
 9NS Windows Setup Installer Generator
 Compiles a native, self-extracting Windows Win32 Setup installer
-(dist/9NS-Setup-1.0.0.exe) with embedded package payload, GUI wizard,
+(dist/9NS-Setup-<VERSION>.exe) with embedded package payload, GUI wizard,
 elevation manifest, desktop/start menu shortcuts, and uninstaller registration.
 Also stages the Inno Setup script (packaging/9ns-setup.iss).
 """
@@ -16,7 +16,9 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
 ZIP_PKG = os.path.join(DIST_DIR, "9ns-windows-x64.zip")
 INSTALLER_DIR = os.path.join(ROOT_DIR, "src", "installer")
-SETUP_EXE = os.path.join(DIST_DIR, "9NS-Setup-1.0.0.exe")
+# Keep in step with kAppVersion in src/installer/setup.cpp and packaging/9ns.wxs.
+VERSION = "1.1.0"
+SETUP_EXE = os.path.join(DIST_DIR, f"9NS-Setup-{VERSION}.exe")
 
 WINDRES = shutil.which("windres")
 CXX = shutil.which("g++")
